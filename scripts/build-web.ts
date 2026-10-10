@@ -31,8 +31,8 @@ const js = await bundle(false);
 const artifactJs = await bundle(true);
 const css = await readFile(join(root, 'src/web/styles.css'), 'utf8');
 
-const head = `<title>ПДД Тренер</title>
-<meta name="description" content="Тренажёр теоретического экзамена ГИБДД: билеты, экзамен по правилам, темы, марафон, работа над ошибками">
+const head = `<title>Автошкола «Светофор»</title>
+<meta name="description" content="Тренажёр теоретического экзамена ГИБДД автошколы «Светофор»: билеты ABM и CD, экзамен по правилам, работа над ошибками">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=PT+Mono&family=Unbounded:wght@600;700&display=swap">
@@ -62,6 +62,12 @@ console.log(`dist/index.html — ${(page.length / 1024).toFixed(1)} КБ (JS ${(
 // Официальные билеты и картинки (npm run fetch:official) кладутся рядом со страницей; без них работает демо-банк.
 const pub = join(root, 'public');
 const hasOfficial = await access(join(pub, 'content/official.json')).then(() => true, () => false);
+// Настройки учётных записей автошколы (открытый ключ); без файла тренажёр открыт всем.
+const school = join(root, 'school/school.json');
+if (await access(school).then(() => true, () => false)) {
+  await cp(school, join(dist, 'school.json'));
+  console.log('Учётные записи включены: school.json скопирован в dist/');
+}
 if (hasOfficial) {
   await cp(pub, dist, { recursive: true });
   console.log('Официальный банк билетов скопирован в dist/');

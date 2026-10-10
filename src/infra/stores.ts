@@ -64,3 +64,22 @@ export class BrowserStore implements KeyValueStore {
     }
   }
 }
+
+/** Пространство ключей одного пользователя: несколько учеников на одном устройстве не смешивают прогресс. */
+export class PrefixedStore implements KeyValueStore {
+  private readonly base: KeyValueStore;
+  private readonly prefix: string;
+  constructor(base: KeyValueStore, prefix: string) {
+    this.base = base;
+    this.prefix = prefix;
+  }
+  get(key: string): string | null {
+    return this.base.get(this.prefix + key);
+  }
+  set(key: string, value: string): void {
+    this.base.set(this.prefix + key, value);
+  }
+  remove(key: string): void {
+    this.base.remove(this.prefix + key);
+  }
+}

@@ -7,6 +7,8 @@ import { dayKey } from '../core/progress.ts';
 import { BLOCKS_PER_TICKET, type Question } from '../core/types.ts';
 import { TICKET_SETS, UNCONFIRMED_CATEGORIES, ticketSet } from '../content/categories.ts';
 import { type CatalogGroup, SIGNS, renderSign } from '../content/signs.ts';
+import type { Identity } from '../core/credentials.ts';
+import { logo, userChip } from './views-accounts.ts';
 import { type SafeHtml, clock, html, pct, plural, raw, shortDate } from './dom.ts';
 
 declare global {
@@ -14,7 +16,7 @@ declare global {
   var __PDD_ARTIFACT__: boolean | undefined;
 }
 
-export type Route = 'home' | 'tickets' | 'topics' | 'session' | 'result' | 'stats' | 'signs' | 'settings' | 'search';
+export type Route = 'home' | 'tickets' | 'topics' | 'session' | 'result' | 'stats' | 'signs' | 'settings' | 'search' | 'admin';
 
 /** Выбранный, но ещё не подтверждённый вариант ответа (только в интерфейсе, до кнопки «Ответить»/«Далее»). */
 export interface Selection {
@@ -51,25 +53,45 @@ const TICKET_TEXT: Record<TicketStatus, string> = {
 const Q_FORMS = ['вопрос', 'вопроса', 'вопросов'] as const;
 const ERR_FORMS = ['ошибка', 'ошибки', 'ошибок'] as const;
 
-const sign = (spec: string, size = 48) => raw(renderSign(spec, size));
+/** Официальные изображения знаков по номеру (из справочника); без справочника — векторные схемы. */
+const officialSigns = new Map<string, string>();
+export function setSignCatalog(catalog: readonly CatalogGroup[] | undefined): void {
+  officialSigns.clear();
+  for (const g of catalog ?? []) for (const s of g.items) officialSigns.set(s.code, s.image);
+}
+const sign = (spec: string, size = 48) => {
+  const img = spec.includes(':') ? undefined : officialSigns.get(spec);
+  return img ? html`<img class="sign-img" src="${img}" alt="" width="${size}" height="${size}" loading="lazy">` : raw(renderSign(spec, size));
+};
 const meter = (value: number, tone = '') =>
   html`<div class="meter ${tone}" role="presentation"><span style="width:${Math.round(Math.max(0, Math.min(1, value)) * 100)}%"></span></div>`;
 
-export function shell(svc: TrainerService, ui: UiState, body: SafeHtml): SafeHtml {
-  const set = svc.ticketSet;
-  const active: Route = ui.route === 'session' || ui.route === 'result' ? 'home' : ui.route;
+/** Шапка автошколы «Светофор»: логотип, комплект билетов, пользователь, разделы. */
+export function brandHeader(inner: SafeHtml | '' = ''): SafeHtml {
   return html`
     <header class="topbar">
       <div class="topbar-inner">
-        <a class="brand" href="#home" aria-label="ПДД Тренер — на главную">${sign('2.1', 30)}<span class="brand-name">ПДД <b>Тренер</b></span></a>
-        <a class="cat-chip" href="#settings" title="Сменить комплект билетов">
-          <span class="code">${set.code}</span><span class="muted">${set.short}</span>
-        </a>
-        <nav class="nav" aria-label="Разделы">
-          ${NAV.map((n) => html`<a href="#${n.route}" ${n.route === active ? raw('aria-current="page"') : ''}>${n.title}</a>`)}
-        </nav>
+        <a class="brand" href="#home" aria-label="Автошкола «Светофор» — на главную">${logo(34)}
+          <span class="brand-text"><span class="brand-name">Светофор</span><span class="brand-sub">автошкола</span></span></a>
+        ${inner}
       </div>
-    </header>
+    </header>`;
+}
+
+export function shell(svc: TrainerService, ui: UiState, body: SafeHtml, user: Identity | null = null): SafeHtml {
+  const set = svc.ticketSet;
+  const active: Route = ui.route === 'session' || ui.route === 'result' ? 'home' : ui.route;
+  const staff = user?.role === 'admin' || user?.role === 'manager';
+  const nav = staff ? [...NAV, { route: 'admin' as const, title: 'Управление' }] : NAV;
+  return html`
+    ${brandHeader(html`
+        <a class="cat-chip" href="#settings" title="Сменить комплект билетов">
+          <span class="code">${set.code}</span><span class="chip-sub">${set.short}</span>
+        </a>
+        ${user ? userChip(user) : ''}
+        <nav class="nav" aria-label="Разделы">
+          ${nav.map((n) => html`<a href="#${n.route}" ${n.route === active ? raw('aria-current="page"') : ''}>${n.title}</a>`)}
+        </nav>`)}
     <main id="main">
       ${svc.warnings.map((w) => html`<div class="notice">${w}</div>`)}
       ${ui.flash ? html`<div class="notice ${ui.flash.kind === 'ok' ? 'info' : ''}" role="status">${ui.flash.text}</div>` : ''}
@@ -79,7 +101,7 @@ export function shell(svc: TrainerService, ui: UiState, body: SafeHtml): SafeHtm
 
 // ---------- Главная ----------
 
-export function homeView(svc: TrainerService): SafeHtml {
+export function homeView(svc: TrainerService, user: Identity | null = null): SafeHtml {
   const o = svc.overview();
   const r = o.readiness;
   const session = svc.session;
@@ -93,6 +115,8 @@ export function homeView(svc: TrainerService): SafeHtml {
     </button>`;
 
   return html`
+    ${user ? html`<section class="greeting"><h1>Здравствуйте${user.role === 'admin' ? '' : `, ${user.name}`}!</h1>
+      <p class="muted">Тренажёр автошколы «Светофор» · билеты ${svc.ticketSet.code}</p></section>` : ''}
     ${svc.isDemoPack ? html`<div class="notice info"><span>Сейчас подключён <b>демо-банк</b>: ${svc.bankFor('AB').tickets.length} билета ABM и ${svc.bankFor('CD').tickets.length} билета CD.
       Полный официальный банк (по 40 билетов) подключается в <a href="#settings">настройках</a>.</span></div>` : ''}
     ${unfinished ? html`<div class="notice info"><span>У вас есть незавершённая тренировка «${session.kind === 'exam' ? 'Экзамен' : session.title}».</span>

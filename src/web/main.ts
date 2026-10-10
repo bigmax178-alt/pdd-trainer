@@ -1,4 +1,6 @@
+import { AccountService } from '../app/accounts.ts';
 import { systemClock } from '../app/ports.ts';
+import { type SchoolConfig, parseSchoolConfig } from '../core/credentials.ts';
 import { TrainerService } from '../app/trainer.ts';
 import { DomainError } from '../core/types.ts';
 import { findTicketSet } from '../content/categories.ts';
@@ -6,21 +8,26 @@ import { DEMO_PACK } from '../content/demo-bank.ts';
 import { PackFormatError, parsePack } from '../content/pack-io.ts';
 import { type CatalogGroup, parseSignCatalog } from '../content/signs.ts';
 import type { ContentPack } from '../core/types.ts';
-import { BrowserStore } from '../infra/stores.ts';
+import { BrowserStore, PrefixedStore } from '../infra/stores.ts';
+import { type AccountUi, accountCard, adminView, emptyAccountUi, welcomeView } from './views-accounts.ts';
 import {
-  type Route, type UiState, homeView, resultView, searchView, sessionView, settingsView, shell,
+  type Route, type UiState, brandHeader, homeView, resultView, searchView, sessionView, setSignCatalog, settingsView, shell,
   signsView, statsView, ticketsView, topicsView,
 } from './views.ts';
-import { clock } from './dom.ts';
+import { clock, html } from './dom.ts';
 import { remainingMs } from '../core/exam.ts';
 
-const ROUTES: readonly Route[] = ['home', 'tickets', 'topics', 'session', 'result', 'stats', 'signs', 'settings', 'search'];
+const ROUTES: readonly Route[] = ['home', 'tickets', 'topics', 'session', 'result', 'stats', 'signs', 'settings', 'search', 'admin'];
 
 const store = new BrowserStore(() => window.localStorage);
 // Сервис создаётся после загрузки контента (официальные билеты лежат рядом со страницей отдельным файлом).
 let svc!: TrainerService;
+let accounts!: AccountService;
+let pack: ContentPack = DEMO_PACK;
 let signCatalog: CatalogGroup[] | undefined;
 let booted = false;
+let unsubscribe: (() => void) | undefined;
+const acct: AccountUi = emptyAccountUi();
 const root = document.getElementById('app') as HTMLElement;
 
 const ui: UiState = { route: routeFromHash(), selection: null, searchQuery: '', confirmReset: false, exportText: '', flash: null };
@@ -50,14 +57,33 @@ function applyTheme(): void {
   else document.documentElement.setAttribute('data-theme', t);
 }
 
+/** Тренажёр текущего пользователя: у каждой учётной записи свой прогресс и настройки. */
+function startTrainer(): void {
+  const id = accounts.identity;
+  const scoped = accounts.enabled && id ? new PrefixedStore(store, `pdd.u.${id.id}.`) : store;
+  svc = new TrainerService({ store: scoped, clock: systemClock, defaultPack: pack });
+  unsubscribe?.();
+  unsubscribe = svc.subscribe(render);
+}
+
+const pageBase = () => `${location.origin}${location.pathname}`;
+
 function render(): void {
   applyTheme();
+  // Учётные записи включены, а вход не выполнен (или открыто новое приглашение) — экран входа.
+  // Текущая учётная запись сменится только после подтверждения; «Отмена» возвращает в тренажёр.
+  if (accounts.enabled && (!accounts.identity || acct.preview)) {
+    root.innerHTML = html`${brandHeader()}<main id="main">${welcomeView(accounts, acct)}</main>`.value;
+    return;
+  }
   const now = systemClock.now();
   const s = svc.session;
   if (ui.route === 'session' && s?.kind === 'exam' && s.verdict !== 'in_progress') {
     navigate('result');
     return;
   }
+  if (ui.route === 'admin' && !accounts.isStaff) ui.route = 'home';
+  const user = accounts.identity;
   let body;
   switch (ui.route) {
     case 'tickets': body = ticketsView(svc); break;
@@ -66,11 +92,12 @@ function render(): void {
     case 'result': body = resultView(svc, now); break;
     case 'stats': body = statsView(svc, now); break;
     case 'signs': body = signsView(signCatalog); break;
-    case 'settings': body = settingsView(svc, ui); break;
+    case 'settings': body = html`${accountCard(accounts, acct)}${settingsView(svc, ui)}`; break;
     case 'search': body = searchView(svc, ui); break;
-    default: body = homeView(svc);
+    case 'admin': body = adminView(accounts, acct, pageBase()); break;
+    default: body = homeView(svc, user);
   }
-  root.innerHTML = shell(svc, ui, body).value;
+  root.innerHTML = shell(svc, ui, body, user).value;
 }
 
 let toastTimer: number | undefined;
@@ -148,7 +175,79 @@ function onNext(): void {
   window.scrollTo(0, 0);
 }
 
+/** Асинхронное действие с учётными записями: блокировка кнопок, ошибки — в карточку на экране. */
+async function accountTask(task: () => Promise<void>): Promise<void> {
+  if (acct.busy) return;
+  acct.busy = true;
+  acct.error = null;
+  render();
+  try {
+    await task();
+  } catch (err) {
+    acct.error = errorText(err);
+  } finally {
+    acct.busy = false;
+    render();
+  }
+}
+
+function issuedById(id: string) {
+  return (acct.lastIssued?.id === id ? acct.lastIssued : undefined) ?? accounts.issued().find((r) => r.id === id);
+}
+
+function copyText(text: string): void {
+  navigator.clipboard.writeText(text).then(
+    () => toast('Ссылка скопирована — отправьте её лично'),
+    () => {
+      (document.getElementById('issued-link') as HTMLInputElement | null)?.select();
+      toast('Выделите ссылку и скопируйте вручную');
+    },
+  );
+}
+
+/** Вход по приглашению: сначала показываем, кому оно выдано, вход — после подтверждения. */
+async function openInvite(code: string): Promise<void> {
+  acct.preview = await accounts.previewInvite(code);
+  acct.pendingInvite = code;
+}
+
+function takeInviteFromHash(): string | null {
+  if (!location.hash.startsWith('#invite=')) return null;
+  const code = decodeURIComponent(location.hash.slice('#invite='.length));
+  try {
+    // Убираем код из адресной строки и истории браузера.
+    history.replaceState(null, '', `${location.pathname}${location.search}#home`);
+  } catch {
+    /* без History API код останется в адресе до перехода */
+  }
+  return code;
+}
+
 const actions: Record<string, (arg: string) => void> = {
+  'invite-cancel': () => { acct.preview = null; acct.pendingInvite = null; acct.error = null; render(); },
+  'copy-link': (arg) => {
+    const rec = issuedById(arg);
+    if (rec) copyText(AccountService.inviteLink(pageBase(), rec.invite));
+  },
+  'share-link': (arg) => {
+    const rec = issuedById(arg);
+    if (!rec) return;
+    const url = AccountService.inviteLink(pageBase(), rec.invite);
+    if (navigator.share) {
+      navigator.share({ title: 'Автошкола «Светофор»', text: `Приглашение в тренажёр ПДД: ${rec.name}`, url }).catch(() => undefined);
+    } else {
+      copyText(url);
+    }
+  },
+  lock: () => { accounts.lock(); acct.lastIssued = null; render(); },
+  'logout-ask': () => { acct.confirmLogout = true; render(); },
+  'logout-cancel': () => { acct.confirmLogout = false; render(); },
+  'logout-confirm': () => {
+    accounts.logout();
+    Object.assign(acct, emptyAccountUi());
+    startTrainer();
+    navigate('home');
+  },
   'go-tickets': () => navigate('tickets'),
   'go-topics': () => navigate('topics'),
   'go-signs': () => navigate('signs'),
@@ -232,9 +331,41 @@ root.addEventListener('change', (e) => {
 
 root.addEventListener('submit', (e) => {
   e.preventDefault();
-  const input = document.getElementById('search-input') as HTMLInputElement | null;
-  ui.searchQuery = input?.value.trim() ?? '';
-  render();
+  const form = e.target as HTMLFormElement;
+  const data = new FormData(form);
+  const field = (name: string) => String(data.get(name) ?? '');
+  switch (form.id) {
+    case 'invite-form':
+      void accountTask(() => openInvite(field('invite')));
+      break;
+    case 'join-form':
+      void accountTask(async () => {
+        const code = acct.pendingInvite;
+        if (!code || !acct.preview) return;
+        if (acct.preview.staff && field('password') !== field('password2')) throw new Error('Пароли не совпадают');
+        await accounts.acceptInvite(code, acct.preview.staff ? field('password') : undefined);
+        acct.preview = null;
+        acct.pendingInvite = null;
+        startTrainer();
+        navigate(accounts.isStaff ? 'admin' : 'home');
+        toast(`Добро пожаловать, ${accounts.identity?.name ?? ''}`);
+      });
+      break;
+    case 'unlock-form':
+      void accountTask(() => accounts.unlock(field('password')));
+      break;
+    case 'issue-form':
+      void accountTask(async () => {
+        const role = field('role') === 'manager' ? 'manager' : 'student';
+        acct.lastIssued = await accounts.issue({ role, name: field('name'), months: Number(field('months')) });
+      });
+      break;
+    default: {
+      const input = document.getElementById('search-input') as HTMLInputElement | null;
+      ui.searchQuery = input?.value.trim() ?? '';
+      render();
+    }
+  }
 });
 
 document.addEventListener('keydown', (e) => {
@@ -265,6 +396,12 @@ document.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('hashchange', () => {
+  const code = booted ? takeInviteFromHash() : null;
+  if (code) {
+    void accountTask(async () => {
+      await openInvite(code);
+    });
+  }
   ui.route = routeFromHash();
   ui.flash = null;
   ui.confirmReset = false;
@@ -309,11 +446,31 @@ async function loadContent(): Promise<{ pack: ContentPack; signs?: CatalogGroup[
   };
 }
 
-void loadContent().then(({ pack, signs, packError }) => {
-  svc = new TrainerService({ store, clock: systemClock, defaultPack: pack });
-  signCatalog = signs;
-  if (packError) ui.flash = { kind: 'bad', text: `Официальные билеты не загрузились, открыт демо-банк: ${packError}` };
+/** Настройки автошколы: открытый ключ и список блокировок. Нет файла — учётные записи выключены (демо). */
+async function loadSchool(): Promise<SchoolConfig | null> {
+  try {
+    return parseSchoolConfig(await fetchJson('./school.json'));
+  } catch {
+    return null;
+  }
+}
+
+void Promise.all([loadContent(), loadSchool()]).then(async ([content, school]) => {
+  pack = content.pack;
+  signCatalog = content.signs;
+  setSignCatalog(content.signs);
+  if (content.packError) ui.flash = { kind: 'bad', text: `Официальные билеты не загрузились, открыт демо-банк: ${content.packError}` };
+  accounts = new AccountService({ store, clock: systemClock, school });
+  await accounts.restore();
+  const code = takeInviteFromHash();
+  if (code && accounts.enabled) {
+    try {
+      await openInvite(code);
+    } catch (err) {
+      acct.error = errorText(err);
+    }
+  }
+  startTrainer();
   booted = true;
-  svc.subscribe(render);
   render();
 });
