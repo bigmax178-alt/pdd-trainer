@@ -23,7 +23,7 @@ let signCatalog: CatalogGroup[] | undefined;
 let booted = false;
 const root = document.getElementById('app') as HTMLElement;
 
-const ui: UiState = { route: routeFromHash(), searchQuery: '', confirmReset: false, exportText: '', flash: null };
+const ui: UiState = { route: routeFromHash(), selection: null, searchQuery: '', confirmReset: false, exportText: '', flash: null };
 if (store.degraded) ui.flash = { kind: 'bad', text: 'Браузер запрещает сохранять данные: прогресс будет доступен только до закрытия вкладки.' };
 
 function routeFromHash(): Route {
@@ -62,7 +62,7 @@ function render(): void {
   switch (ui.route) {
     case 'tickets': body = ticketsView(svc); break;
     case 'topics': body = topicsView(svc); break;
-    case 'session': body = sessionView(svc, now); break;
+    case 'session': body = sessionView(svc, now, ui.selection); break;
     case 'result': body = resultView(svc, now); break;
     case 'stats': body = statsView(svc, now); break;
     case 'signs': body = signsView(signCatalog); break;
@@ -94,15 +94,28 @@ function errorText(err: unknown): string {
 
 function start(fn: () => unknown): void {
   fn();
+  ui.selection = null;
   window.scrollTo(0, 0);
   navigate('session');
 }
 
-function onAnswer(displayed: number): void {
+/** Выбор варианта: ответ ещё не зафиксирован, выбор можно сменить. */
+function onSelect(displayed: number): void {
   const s = svc.session;
   const item = s?.items[s.cursor];
-  if (!s || !item || item.answer !== undefined || displayed >= item.optionOrder.length) return;
-  const outcome = svc.answer(displayed);
+  if (!s || !item || item.answer !== undefined || displayed < 0 || displayed >= item.optionOrder.length) return;
+  ui.selection = { sessionId: s.id, itemIndex: s.cursor, displayed };
+  render();
+  document.getElementById('next-btn')?.focus({ preventScroll: true });
+}
+
+/** Кнопка на нижней панели: только здесь ответ фиксируется. */
+function onConfirm(): void {
+  const s = svc.session;
+  const sel = ui.selection;
+  if (!s || !sel || sel.sessionId !== s.id || sel.itemIndex !== s.cursor) return;
+  ui.selection = null;
+  const outcome = svc.answer(sel.displayed);
   const after = svc.session;
   if (!after) return;
   if (after.kind === 'exam') {
@@ -110,12 +123,15 @@ function onAnswer(displayed: number): void {
       const block = (s.items[s.cursor] as { block?: number }).block ?? 0;
       toast(`Ошибка в блоке ${block}: добавлено ${outcome.addedQuestions} вопросов и 5 минут`, 'bad');
     }
-    if (after.verdict !== 'in_progress') {
-      navigate('result');
-      return;
-    }
+    if (after.verdict !== 'in_progress') navigate('result');
+    else onNext();
+    return;
   }
-  // Автоперехода нет: показываем разбор и панель «Далее», фокус — на кнопке (Enter/пробел нажимают её).
+  if (!svc.settings.instantFeedback) {
+    onNext();
+    return;
+  }
+  // Тренировка с разбором: показываем правильный ответ и пояснение, дальше — кнопка «Далее».
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   document.querySelector('.explain')?.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' });
   document.getElementById('next-btn')?.focus({ preventScroll: true });
@@ -149,10 +165,11 @@ const actions: Record<string, (arg: string) => void> = {
   'start-topic': (arg) => start(() => svc.startTopic(arg)),
   'start-question': (arg) => start(() => svc.startQuestion(arg)),
   'start-search': () => start(() => svc.startSearch(ui.searchQuery)),
-  answer: (arg) => onAnswer(Number(arg)),
+  select: (arg) => onSelect(Number(arg)),
+  confirm: () => onConfirm(),
   next: () => onNext(),
-  skip: () => svc.skip(),
-  goto: (arg) => svc.goTo(Number(arg)),
+  skip: () => { ui.selection = null; svc.skip(); },
+  goto: (arg) => { ui.selection = null; svc.goTo(Number(arg)); },
   finish: () => { svc.finish(); navigate('result'); },
   'to-result': () => navigate('result'),
   favorite: (arg) => svc.toggleFavorite(arg),
@@ -229,10 +246,12 @@ document.addEventListener('keydown', (e) => {
   const item = s.items[s.cursor];
   try {
     if (/^[1-5]$/.test(e.key)) {
-      onAnswer(Number(e.key) - 1);
+      onSelect(Number(e.key) - 1);
     } else if ((e.key === 'Enter' || e.key === 'ArrowRight') && !target.closest('button, a')) {
       if (item?.answer !== undefined) onNext();
+      else onConfirm();
     } else if (e.code === 'KeyS' && s.kind === 'exam') {
+      ui.selection = null;
       svc.skip();
     } else if (e.code === 'KeyF' && item) {
       svc.toggleFavorite(item.questionId);

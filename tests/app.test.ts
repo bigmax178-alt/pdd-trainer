@@ -147,7 +147,7 @@ describe('Сервис тренажёра', () => {
 });
 
 describe('Веб-представления (рендер без браузера)', () => {
-  const ui = (route: UiState['route']): UiState => ({ route, searchQuery: 'обгон', confirmReset: true, exportText: '{"a":1}', flash: null });
+  const ui = (route: UiState['route']): UiState => ({ route, selection: null, searchQuery: 'обгон', confirmReset: true, exportText: '{"a":1}', flash: null });
 
   it('html-шаблон экранирует данные; plural склоняет', () => {
     assert.equal(html`<b>${'<img onerror=x>'}</b>`.value, '<b>&lt;img onerror=x&gt;</b>');
@@ -172,6 +172,23 @@ describe('Веб-представления (рендер без браузер�
     svc.startTicket(1);
     answerCurrent(svc, false);
     assert.match(sessionView(svc, now).value, /Правильный ответ/);
+  });
+
+  it('выбор варианта не фиксирует ответ: подсветка, варианты активны, кнопка подтверждения', () => {
+    const { svc, clock } = setup();
+    svc.startTicket(1);
+    const id = svc.session!.id;
+    const view = sessionView(svc, clock.now(), { sessionId: id, itemIndex: 0, displayed: 1 }).value;
+    assert.match(view, /class="option selected"[^>]*data-arg="1"/);
+    assert.ok(!view.includes('disabled'), 'вариант можно сменить');
+    assert.match(view, /data-action="confirm"[^>]*>Ответить</);
+    assert.equal(svc.session?.items[0]?.answer, undefined, 'ответ не записан');
+    svc.updateSettings({ instantFeedback: false });
+    assert.match(sessionView(svc, clock.now(), { sessionId: id, itemIndex: 0, displayed: 1 }).value, /data-action="confirm"[^>]*>Далее/);
+    svc.startExam();
+    const exam = sessionView(svc, clock.now(), { sessionId: svc.session!.id, itemIndex: 0, displayed: 0 }).value;
+    assert.match(exam, /data-action="confirm"[^>]*>Далее/);
+    assert.match(sessionView(svc, clock.now(), { sessionId: 'другая', itemIndex: 0, displayed: 0 }).value, /^(?![\s\S]*data-action="confirm")/, 'выбор из чужой сессии не показывается');
   });
 
   it('контент из загруженного банка не может внедрить разметку', () => {

@@ -16,8 +16,16 @@ declare global {
 
 export type Route = 'home' | 'tickets' | 'topics' | 'session' | 'result' | 'stats' | 'signs' | 'settings' | 'search';
 
+/** Выбранный, но ещё не подтверждённый вариант ответа (только в интерфейсе, до кнопки «Ответить»/«Далее»). */
+export interface Selection {
+  readonly sessionId: string;
+  readonly itemIndex: number;
+  readonly displayed: number;
+}
+
 export interface UiState {
   route: Route;
+  selection: Selection | null;
   searchQuery: string;
   confirmReset: boolean;
   exportText: string;
@@ -201,7 +209,11 @@ function cellsView(session: PracticeState | ExamState, showCorrectness: boolean)
   return html`<div class="cells-scroll"><div class="cells"><div class="cell-group">${windowItems.map((it, k) => cell(it, from + k))}</div></div></div>`;
 }
 
-export function sessionView(svc: TrainerService, now: number): SafeHtml {
+/**
+ * Экран вопроса. Нажатие на вариант только выбирает его (выбор можно сменить);
+ * ответ фиксируется кнопкой на нижней панели: «Ответить» в тренировках с разбором, «Далее» на экзамене.
+ */
+export function sessionView(svc: TrainerService, now: number, selection: Selection | null = null): SafeHtml {
   const s = svc.session;
   if (!s) {
     return html`<section class="card section"><h1>Нет активной тренировки</h1><p class="muted">Выберите режим на главной.</p><div><a class="btn btn-primary" href="#home">На главную</a></div></section>`;
@@ -211,6 +223,10 @@ export function sessionView(svc: TrainerService, now: number): SafeHtml {
   const q = bank.get(item.questionId);
   const isExam = s.kind === 'exam';
   const answered = item.answer !== undefined;
+  const selected = !answered && selection?.sessionId === s.id && selection.itemIndex === s.cursor ? selection.displayed : undefined;
+  const pending = selected !== undefined;
+  // Подтверждение сразу переходит дальше на экзамене и в тренировке без мгновенного разбора.
+  const confirmMovesOn = isExam || !svc.settings.instantFeedback;
   const reveal = answered && !isExam && svc.settings.instantFeedback;
   const fav = svc.progress.favorites.includes(q.id);
   const answeredCount = s.items.filter((i) => i.answer !== undefined).length;
@@ -220,7 +236,7 @@ export function sessionView(svc: TrainerService, now: number): SafeHtml {
   const extraInfo = isExam && (s.items[s.cursor] as { extra?: boolean }).extra ? html`<span class="pill pill-medium">дополнительный</span>` : '';
 
   return html`
-    <section class="section ${answered ? 'has-next' : ''}" aria-live="polite">
+    <section class="section ${answered || pending ? 'has-next' : ''}" aria-live="polite">
       <div class="session-head">
         <h1>${title}</h1>
         ${isExam ? html`<span class="timer ${remainingMs(s, now) < 120_000 ? 'low' : ''}" id="timer" aria-label="Осталось времени">${clock(remainingMs(s, now))}</span>` : ''}
@@ -245,7 +261,8 @@ export function sessionView(svc: TrainerService, now: number): SafeHtml {
             if (reveal && orig === q.correctIndex) cls.push('correct');
             else if (reveal && orig === item.answer) cls.push('wrong');
             else if (answered && orig === item.answer) cls.push('chosen');
-            return html`<button class="${cls.join(' ')}" data-action="answer" data-arg="${shown}" ${answered ? raw('disabled') : ''}>
+            else if (shown === selected) cls.push('selected');
+            return html`<button class="${cls.join(' ')}" data-action="select" data-arg="${shown}" aria-pressed="${shown === selected}" ${answered ? raw('disabled') : ''}>
               <span class="key">${shown + 1}</span><span>${q.options[orig]}</span></button>`;
           })}
         </div>
@@ -256,10 +273,17 @@ export function sessionView(svc: TrainerService, now: number): SafeHtml {
             ${q.ruleRefs?.length ? html`<span class="muted" style="font-size:var(--step--1)">ПДД: ${q.ruleRefs.map((r) => (/^\d/.test(r) ? `п. ${r}` : r)).join(', ')}</span>` : ''}
           </div>` : ''}
         <div class="q-actions">
-          <span class="grow kbd-hint">Клавиши: <span class="kbd">1</span>–<span class="kbd">${item.optionOrder.length}</span> ответ, <span class="kbd">Enter</span> далее${isExam ? html`, <span class="kbd">S</span> пропустить` : ''}</span>
+          <span class="grow kbd-hint">${answered ? '' : 'Выберите вариант — его можно сменить, пока не нажата кнопка внизу. '}Клавиши: <span class="kbd">1</span>–<span class="kbd">${item.optionOrder.length}</span> выбор, <span class="kbd">Enter</span> ${confirmMovesOn ? 'далее' : 'ответить'}${isExam ? html`, <span class="kbd">S</span> пропустить` : ''}</span>
           ${isExam && !answered ? html`<button class="btn" data-action="skip">Пропустить</button>` : ''}
         </div>
       </article>
+      ${pending ? html`
+        <div class="next-bar" role="region" aria-label="Подтверждение ответа">
+          <div class="next-bar-inner">
+            <span class="next-status">Выбран ответ ${(selected ?? 0) + 1}</span>
+            <button class="btn btn-primary" id="next-btn" data-action="confirm">${confirmMovesOn ? html`Далее <span aria-hidden="true">→</span>` : 'Ответить'}</button>
+          </div>
+        </div>` : ''}
       ${answered ? html`
         <div class="next-bar" role="region" aria-label="Следующий вопрос">
           <div class="next-bar-inner">
