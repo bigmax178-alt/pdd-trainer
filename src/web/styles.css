@@ -371,6 +371,56 @@ fieldset.field { border: 0; padding: 0; margin: 0; }
 .greeting { display: grid; gap: 4px; }
 .sign-img { display: block; object-fit: contain; }
 
+/* ---------- План, похожие вопросы, правила, шпаргалки ---------- */
+.plan { display: grid; gap: 12px; border-left: 4px solid var(--sig-amber); }
+.plan-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.plan-days { font: 600 var(--step-2)/1.1 var(--font-display); font-variant-numeric: tabular-nums; }
+.plan-facts { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: var(--step--1); }
+.plan-facts b { color: var(--fg); font-size: var(--step-0); }
+.similar { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.similar summary { cursor: pointer; font-weight: 600; }
+.similar-list { display: grid; gap: 12px; margin-top: 12px; }
+.similar-item { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.similar-item img { width: 120px; height: auto; border-radius: 6px; }
+.similar-item:has(> .similar-body:only-child) { grid-template-columns: minmax(0, 1fr); }
+.similar-body { display: grid; gap: 6px; font-size: .9375rem; }
+.similar-options { margin: 0; padding-left: 20px; display: grid; gap: 2px; }
+.similar-options .is-correct { color: var(--good); font-weight: 600; }
+.similar-explain { font-size: var(--step--1); }
+.rule-refs { font-size: var(--step--1); }
+.rule-link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; font-weight: 600; cursor: pointer; }
+.dialog-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 30; }
+.dialog {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 31;
+  width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto;
+  background: var(--surface); color: var(--fg); border-radius: 12px; padding: 20px; box-shadow: var(--shadow); display: grid; gap: 10px;
+}
+.dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.rule-text { line-height: 1.55; white-space: pre-line; }
+.rule-section { border-top: 1px solid var(--line); padding: 10px 16px; }
+.rule-section:first-child { border-top: 0; }
+.rule-section summary { cursor: pointer; }
+.rule-items { display: grid; gap: 10px; padding: 12px 0 4px; }
+.rule-item { line-height: 1.55; max-width: 80ch; }
+.tips { display: grid; gap: 16px; }
+.tip { display: grid; gap: 8px; border-left: 4px solid var(--sig-amber); }
+.tip h3 { font: 600 var(--step-1)/1.3 var(--font-display); }
+.tip-li { padding-left: 18px; position: relative; }
+.tip-li::before { content: ''; position: absolute; left: 0; top: .6em; width: 8px; height: 8px; border-radius: 50%; background: var(--sig-amber); }
+.tip-actions { padding: 4px 0 0; }
+.tip-banner { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; background: var(--surface); }
+.tip-banner summary { cursor: pointer; font-weight: 600; }
+.tip-banner .tip { margin-top: 12px; border: 0; padding: 0; }
+.field input[type="date"] { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface); min-height: 40px; }
+.form-row input[type="date"] { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface); min-height: 40px; }
+
+/* ---------- Резервная копия ---------- */
+.backup-form { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+.backup-form .field { flex: 1; min-width: 180px; }
+.backup-form .field input[type="password"], .backup-form .field input[type="file"] {
+  width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface); min-height: 44px;
+}
+
 /* ---------- Тост ---------- */
 .toast {
   position: fixed; left: 50%; top: calc(76px + env(safe-area-inset-top, 0px)); transform: translateX(-50%);
@@ -391,6 +441,8 @@ fieldset.field { border: 0; padding: 0; margin: 0; }
   .cell { width: 28px; height: 28px; }
   .verdict-word { font-size: 2rem; }
   .welcome-title { font-size: var(--step-2); }
+  .similar-item { grid-template-columns: minmax(0, 1fr); }
+  .similar-item img { width: 100%; max-width: 320px; }
   .user-chip { max-width: 140px; }
   .next-bar .btn { flex: 1; min-width: 0; }
 }

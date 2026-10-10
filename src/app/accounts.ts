@@ -3,6 +3,7 @@ import {
   decodeInvite, importPrivateKey, issueAccount, keyMatches, openSecret, readToken, importPublicKey,
   sealSecret, staffFromInvite, verifyChain,
 } from '../core/credentials.ts';
+import { type VerifiedReport, decodeReport } from '../core/report.ts';
 import type { Clock, KeyValueStore } from './ports.ts';
 
 /** Учётная запись, сохранённая на устройстве. Ключ сотрудника хранится только зашифрованным паролем. */
@@ -27,6 +28,25 @@ export interface InvitePreview {
 
 const ACCOUNT_KEY = 'pdd.v1.account';
 const issuedKey = (staffId: string) => `pdd.v1.issued.${staffId}`;
+const reportsKey = (staffId: string) => `pdd.v1.reports.${staffId}`;
+export const BACKUP_FORMAT = 'pdd-journal-backup';
+
+/** Сохранённый отчёт ученика (последний от каждого). */
+export interface StoredReport {
+  readonly studentId: string;
+  readonly name: string;
+  readonly receivedAt: number;
+  readonly report: VerifiedReport;
+}
+
+/** Зашифрованная резервная копия журнала и отчётов — паролем сотрудника. */
+export interface JournalBackup {
+  readonly format: typeof BACKUP_FORMAT;
+  readonly v: 1;
+  readonly staffId: string;
+  readonly createdAt: number;
+  readonly sealed: SealedSecret;
+}
 export const MIN_PASSWORD = 6;
 
 export interface AccountDeps {
@@ -191,4 +211,76 @@ export class AccountService {
   static inviteLink(base: string, invite: string): string {
     return `${base.replace(/#.*$/, '')}#invite=${invite}`;
   }
+
+  static reportLink(base: string, code: string): string {
+    return `${base.replace(/#.*$/, '')}#report=${code}`;
+  }
+
+  // ---------- Отчёты учеников ----------
+
+  /** Проверка и сохранение отчёта (новый отчёт ученика заменяет прежний). Доступно сотруднику без пароля. */
+  async receiveReport(text: string): Promise<StoredReport> {
+    const school = this.requireSchool();
+    const id = this.identityValue;
+    if (!id || !this.isStaff) throw new CredentialError('not_staff', 'Отчёты принимают администратор и управляющий');
+    const report = await decodeReport(text, school, this.now());
+    const stored: StoredReport = { studentId: report.student.id, name: report.student.name, receivedAt: this.deps.clock.now(), report };
+    const rest = this.reports().filter((r) => r.studentId !== stored.studentId);
+    this.deps.store.set(reportsKey(id.id), JSON.stringify([stored, ...rest]));
+    return stored;
+  }
+
+  reports(): StoredReport[] {
+    const id = this.identityValue?.id;
+    if (!id) return [];
+    try {
+      const list = JSON.parse(this.deps.store.get(reportsKey(id)) ?? '[]') as unknown;
+      return Array.isArray(list) ? (list as StoredReport[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  // ---------- Резервная копия журнала ----------
+
+  /** Журнал и отчёты, зашифрованные паролем сотрудника: файл можно хранить где угодно. */
+  async exportJournal(password: string): Promise<JournalBackup> {
+    const id = this.identityValue;
+    if (!id || !this.isStaff) throw new CredentialError('not_staff', 'Резервная копия доступна только сотрудникам');
+    await this.unlock(password); // проверка пароля
+    const payload = JSON.stringify({ issued: this.issued(), reports: this.reports() });
+    return {
+      format: BACKUP_FORMAT, v: 1, staffId: id.id, createdAt: this.deps.clock.now(),
+      sealed: await sealSecret(payload, password, this.deps.pbkdf2Iterations),
+    };
+  }
+
+  /** Восстановление: записи объединяются с имеющимися (по id), ничего не затирается. */
+  async importJournal(json: string, password: string): Promise<{ issued: number; reports: number }> {
+    const id = this.identityValue;
+    if (!id || !this.isStaff) throw new CredentialError('not_staff', 'Резервная копия доступна только сотрудникам');
+    let backup: Partial<JournalBackup>;
+    try {
+      backup = JSON.parse(json) as Partial<JournalBackup>;
+    } catch {
+      throw new CredentialError('bad_backup', 'Это не файл резервной копии');
+    }
+    if (backup.format !== BACKUP_FORMAT || backup.v !== 1 || !backup.sealed) throw new CredentialError('bad_backup', 'Это не файл резервной копии');
+    if (backup.staffId !== id.id) throw new CredentialError('bad_backup', 'Копия сделана другой учётной записью');
+    const data = JSON.parse(await openSecret(backup.sealed, password)) as { issued?: IssuedRecord[]; reports?: StoredReport[] };
+    const issued = mergeById(this.issued(), data.issued ?? [], (r) => r.id, (r) => r.createdAt);
+    const reports = mergeById(this.reports(), data.reports ?? [], (r) => r.studentId, (r) => r.receivedAt);
+    this.deps.store.set(issuedKey(id.id), JSON.stringify(issued));
+    this.deps.store.set(reportsKey(id.id), JSON.stringify(reports));
+    return { issued: issued.length, reports: reports.length };
+  }
+}
+
+function mergeById<T>(mine: T[], theirs: T[], key: (r: T) => string, time: (r: T) => number): T[] {
+  const map = new Map<string, T>();
+  for (const r of [...theirs, ...mine]) {
+    const prev = map.get(key(r));
+    if (!prev || time(r) >= time(prev)) map.set(key(r), r);
+  }
+  return [...map.values()].sort((a, b) => time(b) - time(a));
 }

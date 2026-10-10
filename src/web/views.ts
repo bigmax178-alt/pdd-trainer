@@ -8,7 +8,11 @@ import { BLOCKS_PER_TICKET, type Question } from '../core/types.ts';
 import { TICKET_SETS, UNCONFIRMED_CATEGORIES, ticketSet } from '../content/categories.ts';
 import { type CatalogGroup, SIGNS, renderSign } from '../content/signs.ts';
 import type { Identity } from '../core/credentials.ts';
+import type { StudyPlan } from '../core/plan.ts';
+import type { SimilarQuestion } from '../core/similar.ts';
+import type { RuleIndex } from '../content/rules.ts';
 import { logo, userChip } from './views-accounts.ts';
+import { planCard, ruleRefs, secs, similarBlock, studentReportCard, topicTipBanner } from './views-extra.ts';
 import { type SafeHtml, clock, html, pct, plural, raw, shortDate } from './dom.ts';
 
 declare global {
@@ -16,7 +20,20 @@ declare global {
   var __PDD_ARTIFACT__: boolean | undefined;
 }
 
-export type Route = 'home' | 'tickets' | 'topics' | 'session' | 'result' | 'stats' | 'signs' | 'settings' | 'search' | 'admin';
+export type Route = 'home' | 'tickets' | 'topics' | 'session' | 'result' | 'stats' | 'signs' | 'settings' | 'search' | 'admin'
+  | 'rules' | 'tips' | 'reports';
+
+/** Данные, которые экраны получают из приложения, а не из сервиса тренажёра. */
+export interface ViewContext {
+  readonly rules?: RuleIndex;
+  readonly similar?: (id: string) => SimilarQuestion[];
+  readonly plan?: StudyPlan;
+  /** Частые ошибки учеников школы (school/hard.json), только id из текущего банка. */
+  readonly frequent: readonly string[];
+  readonly reportLink: string | null;
+  readonly offline: { cached: number; total: number; busy: boolean } | null;
+  readonly updateReady: boolean;
+}
 
 /** Выбранный, но ещё не подтверждённый вариант ответа (только в интерфейсе, до кнопки «Ответить»/«Далее»). */
 export interface Selection {
@@ -40,6 +57,8 @@ const NAV: readonly { route: Route; title: string }[] = [
   { route: 'topics', title: 'Темы' },
   { route: 'stats', title: 'Статистика' },
   { route: 'signs', title: 'Знаки' },
+  { route: 'rules', title: 'Правила' },
+  { route: 'tips', title: 'Шпаргалки' },
   { route: 'search', title: 'Поиск' },
   { route: 'settings', title: 'Настройки' },
 ];
@@ -82,7 +101,7 @@ export function shell(svc: TrainerService, ui: UiState, body: SafeHtml, user: Id
   const set = svc.ticketSet;
   const active: Route = ui.route === 'session' || ui.route === 'result' ? 'home' : ui.route;
   const staff = user?.role === 'admin' || user?.role === 'manager';
-  const nav = staff ? [...NAV, { route: 'admin' as const, title: 'Управление' }] : NAV;
+  const nav = staff ? [...NAV, { route: 'admin' as const, title: 'Управление' }, { route: 'reports' as const, title: 'Отчёты' }] : NAV;
   return html`
     ${brandHeader(html`
         <a class="cat-chip" href="#settings" title="Сменить комплект билетов">
@@ -101,7 +120,7 @@ export function shell(svc: TrainerService, ui: UiState, body: SafeHtml, user: Id
 
 // ---------- Главная ----------
 
-export function homeView(svc: TrainerService, user: Identity | null = null): SafeHtml {
+export function homeView(svc: TrainerService, user: Identity | null = null, ctx?: ViewContext): SafeHtml {
   const o = svc.overview();
   const r = o.readiness;
   const session = svc.session;
@@ -121,6 +140,8 @@ export function homeView(svc: TrainerService, user: Identity | null = null): Saf
       Полный официальный банк (по 40 билетов) подключается в <a href="#settings">настройках</a>.</span></div>` : ''}
     ${unfinished ? html`<div class="notice info"><span>У вас есть незавершённая тренировка «${session.kind === 'exam' ? 'Экзамен' : session.title}».</span>
       <a class="btn btn-primary" href="#session">Продолжить</a></div>` : ''}
+    ${ctx?.updateReady ? html`<div class="notice info"><span>Доступна новая версия тренажёра.</span><button class="btn btn-primary" data-action="reload-app">Обновить</button></div>` : ''}
+    ${ctx?.plan && svc.settings.examDate ? planCard(ctx.plan, svc.settings.examDate) : html`<div class="notice info"><span>Укажите <a href="#settings">дату экзамена</a> — тренажёр рассчитает, сколько билетов решать в день.</span></div>`}
     <section class="hero">
       <div class="card readiness">
         <span class="label">Вероятность сдать экзамен</span>
@@ -157,6 +178,9 @@ export function homeView(svc: TrainerService, user: Identity | null = null): Saf
         ${mode('start-review', '4.3', 'Повторение', o.bank.due ? `${o.bank.due} к повторению` : 'на сегодня всё', o.bank.due === 0)}
         ${mode('start-hard', '1.17', 'Сложные вопросы', 'где вы ошибаетесь чаще', o.bank.mistakes === 0 && o.bank.attempts === o.bank.correct)}
         ${mode('start-favorites', '2.1', 'Избранное', `${o.bank.favorites} ${plural(o.bank.favorites, Q_FORMS)}`, o.bank.favorites === 0)}
+        ${mode('start-slow', '3.24:?', 'Медленные вопросы', o.time.slow ? `${o.time.slow} ${plural(o.time.slow, Q_FORMS)} дольше 45 секунд` : 'где вы долго думаете', o.time.slow === 0)}
+        ${ctx?.frequent.length ? mode('start-frequent', '1.33', 'Частые ошибки учеников', `${ctx.frequent.length} ${plural(ctx.frequent.length, Q_FORMS)} по данным автошколы`) : ''}
+        ${mode('go-tips', '2.4', 'Шпаргалки', 'правила и запоминалки по темам')}
         ${mode('go-signs', '5.19.1', 'Дорожные знаки', 'справочник с изображениями')}
         ${mode('go-search', '3.24:?', 'Поиск', 'по тексту и пунктам ПДД')}
         ${mode('go-stats', '5.5', 'Статистика', `${o.bank.seen} из ${o.bank.total} изучено`)}
@@ -237,7 +261,7 @@ function cellsView(session: PracticeState | ExamState, showCorrectness: boolean)
  * Экран вопроса. Нажатие на вариант только выбирает его (выбор можно сменить);
  * ответ фиксируется кнопкой на нижней панели: «Ответить» в тренировках с разбором, «Далее» на экзамене.
  */
-export function sessionView(svc: TrainerService, now: number, selection: Selection | null = null): SafeHtml {
+export function sessionView(svc: TrainerService, now: number, selection: Selection | null = null, ctx?: ViewContext): SafeHtml {
   const s = svc.session;
   if (!s) {
     return html`<section class="card section"><h1>Нет активной тренировки</h1><p class="muted">Выберите режим на главной.</p><div><a class="btn btn-primary" href="#home">На главную</a></div></section>`;
@@ -268,6 +292,7 @@ export function sessionView(svc: TrainerService, now: number, selection: Selecti
         <button class="btn btn-ghost" data-action="finish">${isExam ? 'Сдаться' : 'Завершить'}</button>
       </div>
       ${cellsView(s, !isExam && svc.settings.instantFeedback)}
+      ${!isExam && s.kind === 'practice' && s.mode === 'topic' && s.topicId && answeredCount === 0 ? topicTipBanner(s.topicId, ctx?.rules) : ''}
       <article class="card qcard">
         <div class="qmeta">
           <span>Вопрос ${s.cursor + 1} из ${s.items.length}</span>
@@ -294,8 +319,10 @@ export function sessionView(svc: TrainerService, now: number, selection: Selecti
           <div class="explain ${item.correct ? '' : 'bad'}">
             <span class="explain-title">${item.correct ? 'Верно' : `Неверно. Правильный ответ — ${item.optionOrder.indexOf(q.correctIndex) + 1}`}</span>
             <span>${q.explanation}</span>
-            ${q.ruleRefs?.length ? html`<span class="muted" style="font-size:var(--step--1)">ПДД: ${q.ruleRefs.map((r) => (/^\d/.test(r) ? `п. ${r}` : r)).join(', ')}</span>` : ''}
-          </div>` : ''}
+            ${ruleRefs(q.ruleRefs, ctx?.rules)}
+            ${item.timeMs !== undefined ? html`<span class="muted" style="font-size:var(--step--1)">Время на ответ: ${secs(item.timeMs)}${item.timeMs >= 45_000 ? ' — на экзамене это долго' : ''}</span>` : ''}
+          </div>
+          ${similarBlock(bank, ctx?.similar?.(q.id) ?? [])}` : ''}
         <div class="q-actions">
           <span class="grow kbd-hint">${answered ? '' : 'Выберите вариант — его можно сменить, пока не нажата кнопка внизу. '}Клавиши: <span class="kbd">1</span>–<span class="kbd">${item.optionOrder.length}</span> выбор, <span class="kbd">Enter</span> ${confirmMovesOn ? 'далее' : 'ответить'}${isExam ? html`, <span class="kbd">S</span> пропустить` : ''}</span>
           ${isExam && !answered ? html`<button class="btn" data-action="skip">Пропустить</button>` : ''}
@@ -354,6 +381,7 @@ export function resultView(svc: TrainerService, now: number): SafeHtml {
           <span class="fact"><span class="label">Вопросов</span><b>${sum.answered}/${sum.total}</b></span>
           <span class="fact"><span class="label">Ошибок</span><b>${sum.errors}</b></span>
           <span class="fact"><span class="label">Доп. вопросов</span><b>${sum.extraQuestions}</b></span>
+          ${sum.avgTimeMs ? html`<span class="fact"><span class="label">На вопрос</span><b>${secs(sum.avgTimeMs)}</b></span>` : ''}
         </div>
       </section>
       <section class="section"><h2>Блоки</h2>
@@ -369,7 +397,7 @@ export function resultView(svc: TrainerService, now: number): SafeHtml {
       <span class="label">${s.title}</span>
       <span class="verdict-word">${sum.correct} из ${sum.total}</span>
       <span>${sum.answered < sum.total ? `Отвечено ${sum.answered} из ${sum.total}. ` : ''}${sum.wrong ? `${sum.wrong} ${plural(sum.wrong, ERR_FORMS)} — вопросы добавлены в «Работу над ошибками»` : 'Без ошибок'}</span>
-      <div class="facts"><span class="fact"><span class="label">Время</span><b>${clock(sum.durationMs)}</b></span></div>
+      <div class="facts"><span class="fact"><span class="label">Время</span><b>${clock(sum.durationMs)}</b></span>${sum.avgTimeMs ? html`<span class="fact"><span class="label">На вопрос</span><b>${secs(sum.avgTimeMs)}</b></span>` : ''}</div>
     </section>
     <div class="btn-row">
       ${s.mode === 'ticket' && s.ticketNumber !== undefined ? html`<button class="btn btn-primary" data-action="start-ticket" data-arg="${s.ticketNumber}">Решить ещё раз</button>
@@ -382,7 +410,7 @@ export function resultView(svc: TrainerService, now: number): SafeHtml {
 
 // ---------- Статистика ----------
 
-export function statsView(svc: TrainerService, now: number): SafeHtml {
+export function statsView(svc: TrainerService, now: number, ctx?: ViewContext): SafeHtml {
   const o = svc.overview();
   const days = Array.from({ length: 14 }, (_, i) => {
     const d = new Date(now);
@@ -400,8 +428,10 @@ export function statsView(svc: TrainerService, now: number): SafeHtml {
         <div class="card kpi"><span class="label">Точность</span><span class="kpi-value">${o.bank.attempts ? pct(o.bank.accuracy) : '—'}</span></div>
         <div class="card kpi"><span class="label">Экзамены</span><span class="kpi-value">${o.exams.passed}/${o.exams.total}</span></div>
         <div class="card kpi"><span class="label">Серия</span><span class="kpi-value">${o.streak} ${plural(o.streak, ['день', 'дня', 'дней'])}</span></div>
+        <div class="card kpi"><span class="label">Время на вопрос</span><span class="kpi-value">${o.time.avgMs ? secs(o.time.avgMs) : '—'}</span><span class="muted" style="font-size:var(--step--1)">${o.time.slow ? `медленных: ${o.time.slow}` : 'на экзамене — минута'}</span></div>
       </div>
     </section>
+    ${ctx?.reportLink !== undefined && ctx.reportLink !== null ? studentReportCard(ctx.reportLink || null) : ''}
     <section class="card section"><div class="section-head"><h2>Ответы за 14 дней</h2><span class="muted">цель — ${o.dailyGoal} в день</span></div>
       <div class="bars" role="img" aria-label="Количество ответов по дням">${days.map((d) => html`<div title="${d.value} ответов"><span style="height:${Math.round((d.value / max) * 100)}%"></span></div>`)}</div>
       <div class="bars-x">${days.map((d) => html`<span>${d.label}</span>`)}</div>
@@ -463,7 +493,7 @@ export function searchView(svc: TrainerService, ui: UiState): SafeHtml {
 
 // ---------- Настройки ----------
 
-export function settingsView(svc: TrainerService, ui: UiState): SafeHtml {
+export function settingsView(svc: TrainerService, ui: UiState, ctx?: ViewContext): SafeHtml {
   const st = svc.settings;
   const toggle = (key: 'instantFeedback' | 'shuffleOptions' | 'examFailFast', title: string, hint: string) => html`
     <label class="form-row" for="set-${key}"><div><b>${title}</b><br><span class="muted">${hint}</span></div>
@@ -490,10 +520,17 @@ export function settingsView(svc: TrainerService, ui: UiState): SafeHtml {
         ${toggle('examFailFast', 'Строгий экзамен', 'Экзамен завершается сразу при провале, как в ГИБДД')}
         <label class="form-row" for="set-goal"><div><b>Дневная цель</b><br><span class="muted">Сколько вопросов решать в день</span></div>
           <select id="set-goal" data-setting="dailyGoal">${[20, 40, 60, 100, 200].map((n) => html`<option value="${n}" ${n === st.dailyGoal ? raw('selected') : ''}>${n}</option>`)}</select></label>
+        <label class="form-row" for="set-exam-date"><div><b>Дата экзамена</b><br><span class="muted">План подготовки на главной: сколько билетов решать в день</span></div>
+          <input type="date" id="set-exam-date" data-setting="examDate" value="${st.examDate ?? ''}"></label>
         <label class="form-row" for="set-theme"><div><b>Тема оформления</b></div>
           <select id="set-theme" data-setting="theme">${(['auto', 'light', 'dark'] as const).map((t) => html`<option value="${t}" ${t === st.theme ? raw('selected') : ''}>${{ auto: 'как в системе', light: 'светлая', dark: 'тёмная' }[t]}</option>`)}</select></label>
       </div>
     </section>
+    ${ctx?.offline ? html`<section class="card section"><h2>Без интернета</h2>
+      <p class="muted">Тренажёр открывается без сети, если его уже открывали. Картинки к вопросам подгружаются по мере решения; чтобы заниматься в дороге, скачайте их заранее (около 21 МБ).</p>
+      <p>Скачано картинок: <b>${ctx.offline.cached}</b> из ${ctx.offline.total}</p>
+      <div class="btn-row"><button class="btn btn-primary" data-action="offline-download" ${ctx.offline.busy || ctx.offline.cached >= ctx.offline.total ? 'disabled' : ''}>${ctx.offline.busy ? 'Скачиваем…' : ctx.offline.cached >= ctx.offline.total ? 'Всё скачано' : 'Скачать все картинки'}</button></div>
+    </section>` : ''}
     <section class="card section"><h2>Банк вопросов</h2>
       <p>Сейчас: <b>${svc.pack.title}</b> <span class="muted">(версия ${svc.pack.version}, ${svc.pack.questions.length} ${plural(svc.pack.questions.length, Q_FORMS)})</span></p>
       <p class="muted">Полный официальный банк собирается командой <span class="mono">npm run import:bank</span> из открытого набора билетов и загружается сюда JSON-файлом.</p>

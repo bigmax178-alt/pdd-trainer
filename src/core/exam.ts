@@ -1,6 +1,6 @@
 import type { QuestionBank } from './question-bank.ts';
 import { createRng, shuffle, type Rng } from './rng.ts';
-import { type AnswerOutcome, type SessionItem, nextUnanswered, resolveOption } from './session.ts';
+import { type AnswerOutcome, type SessionItem, averageTimeMs, nextUnanswered, resolveOption } from './session.ts';
 import {
   type BankId,
   BLOCKS_PER_TICKET,
@@ -67,6 +67,7 @@ export interface ExamState {
   readonly shuffleOptions: boolean;
   readonly items: readonly ExamItem[];
   readonly cursor: number;
+  readonly cursorAt: number;
   readonly startedAt: number;
   readonly deadline: number;
   readonly verdict: ExamVerdict;
@@ -124,6 +125,7 @@ export function createExam(bank: QuestionBank, p: CreateExamParams): ExamState {
     shuffleOptions,
     items,
     cursor: 0,
+    cursorAt: p.now,
     startedAt: p.now,
     deadline: p.now + rules.baseTimeMs,
     verdict: 'in_progress',
@@ -203,8 +205,9 @@ export function answerExam(
   const question = bank.get(item.questionId);
   const chosen = resolveOption(item, displayedIndex);
   const correct = chosen === question.correctIndex;
+  const timeMs = itemIndex === state.cursor ? Math.max(0, now - state.cursorAt) : 0;
   const items: ExamItem[] = state.items.slice();
-  items[itemIndex] = { ...item, answer: chosen, correct };
+  items[itemIndex] = { ...item, answer: chosen, correct, timeMs };
 
   let { deadline, failReason } = state;
   let verdict: ExamVerdict = state.verdict;
@@ -254,6 +257,7 @@ export function answerExam(
     verdict,
     rngState,
     cursor: next < 0 ? itemIndex : next,
+    cursorAt: now,
     ...(failReason !== undefined ? { failReason } : {}),
     ...(finishedAt !== undefined ? { finishedAt } : {}),
   };
@@ -265,6 +269,7 @@ export function answerExam(
       chosenIndex: chosen,
       correctIndex: question.correctIndex,
       finished: verdict !== 'in_progress',
+      timeMs,
       addedQuestions,
       addedTimeMs,
       verdict,
@@ -274,15 +279,15 @@ export function answerExam(
 }
 
 /** «Пропустить»: вопрос остаётся неотвеченным, к нему вернёмся по кругу. */
-export function skipExamQuestion(state: ExamState): ExamState {
+export function skipExamQuestion(state: ExamState, now: number): ExamState {
   if (state.verdict !== 'in_progress') return state;
   const next = nextUnanswered(state.items, state.cursor);
-  return next < 0 ? state : { ...state, cursor: next };
+  return next < 0 ? state : { ...state, cursor: next, cursorAt: now };
 }
 
-export function goToExamItem(state: ExamState, index: number): ExamState {
+export function goToExamItem(state: ExamState, index: number, now: number): ExamState {
   if (index < 0 || index >= state.items.length) throw new DomainError('bad_index', `Нет вопроса №${index + 1}`);
-  return { ...state, cursor: index };
+  return index === state.cursor ? state : { ...state, cursor: index, cursorAt: now };
 }
 
 /** Проверка таймера: вызывается клиентом раз в секунду и сервером при каждом запросе. */
@@ -312,6 +317,7 @@ export interface ExamSummary {
   readonly durationMs: number;
   readonly blocks: readonly { readonly block: number; readonly errors: number; readonly extended: boolean }[];
   readonly wrongIds: readonly string[];
+  readonly avgTimeMs: number;
 }
 
 export function summarizeExam(state: ExamState, now: number): ExamSummary {
@@ -336,5 +342,6 @@ export function summarizeExam(state: ExamState, now: number): ExamSummary {
     durationMs: (state.finishedAt ?? now) - state.startedAt,
     blocks,
     wrongIds: wrong.map((w) => w.questionId),
+    avgTimeMs: averageTimeMs(state.items),
   };
 }

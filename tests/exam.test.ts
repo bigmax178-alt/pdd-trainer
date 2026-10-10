@@ -140,10 +140,10 @@ describe('Экзамен: правила ГИБДД', () => {
 
   it('«Пропустить» переходит к следующему неотвеченному по кругу', () => {
     let s = newExam();
-    s = skipExamQuestion(s);
+    s = skipExamQuestion(s, T0);
     assert.equal(s.cursor, 1);
     s = { ...s, cursor: 19 };
-    assert.equal(skipExamQuestion(s).cursor, 0);
+    assert.equal(skipExamQuestion(s, T0).cursor, 0);
   });
 
   it('прерывание экзамена и сводка', () => {

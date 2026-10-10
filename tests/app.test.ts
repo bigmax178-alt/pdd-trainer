@@ -203,3 +203,26 @@ describe('Веб-представления (рендер без браузер�
     assert.ok(out.includes('&lt;img src=x onerror=alert(1)&gt;'));
   });
 });
+
+describe('Новые экраны рендерятся', () => {
+  it('правила, шпаргалки, план, отчёты и диалог пункта ПДД', async () => {
+    const { planCard, reportsView, ruleDialog, rulesView, tipsView, similarBlock } = await import('../src/web/views-extra.ts');
+    const { RuleIndex, parseRuleBook } = await import('../src/content/rules.ts');
+    const { SimilarityIndex } = await import('../src/core/similar.ts');
+    const { studyPlan, parseExamDate } = await import('../src/core/plan.ts');
+    const { AccountService } = await import('../src/app/accounts.ts');
+    const { svc, clock } = setup();
+    const rules = new RuleIndex(parseRuleBook({ source: 's', edition: 'e', sections: [{ num: '1', title: 'Общие', items: [{ num: '1.2', text: 'Термины.' }] }] }));
+    assert.match(rulesView(rules, '1').value, /Термины\./);
+    assert.match(ruleDialog('1.2', rules).value, /role="dialog"/);
+    assert.match(tipsView(svc, rules).value, /Шпаргалки/);
+    const plan = studyPlan(parseExamDate('2026-12-31')!, svc.overview().tickets, {}, clock.now());
+    assert.match(planCard(plan, '2026-12-31').value, /не решено/);
+    const sim = new SimilarityIndex(svc.bank);
+    assert.match(String(similarBlock(svc.bank, sim.similar('ab2-02'))), /Похожие вопросы/);
+    const acc = new AccountService({ store: new MemoryStore(), clock, school: null });
+    assert.match(reportsView(acc, svc.bank, [], null, null).value, /Отчётов пока нет/);
+    svc.startTopic('signs');
+    assert.match(sessionView(svc, clock.now(), null, { rules, frequent: [], reportLink: null, offline: null, updateReady: false }).value, /Шпаргалка по теме/);
+  });
+});

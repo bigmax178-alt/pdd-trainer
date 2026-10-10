@@ -21,7 +21,7 @@ function simulate(bank: QuestionBank, p: readonly number[], rng: Rng, seed: numb
   let s = createExam(bank, { id: `x${seed}`, now: T0, seed, rules: GIBDD_EXAM_RULES });
   let t = T0;
   for (let guard = 0; s.verdict === 'in_progress' && guard < 200; guard++) {
-    if (rng.next() < 0.05) { s = skipExamQuestion(s); continue; }
+    if (rng.next() < 0.05) { s = skipExamQuestion(s, t); continue; }
     const item = s.items[s.cursor];
     assert.ok(item);
     const ok = rng.next() < (p[item.block - 1] ?? 1);

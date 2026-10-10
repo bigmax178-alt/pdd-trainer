@@ -1,4 +1,5 @@
 import { buildSmartSet } from '../core/adaptive.ts';
+import { parseExamDate, studyPlan } from '../core/plan.ts';
 import {
   type ExamAnswerOutcome, type ExamState, GIBDD_EXAM_RULES,
   abandonExam, answerExam, createExam, goToExamItem, skipExamQuestion, tickExam,
@@ -15,7 +16,7 @@ import {
 } from '../core/session.ts';
 import {
   answersToday, bankOverview, currentStreak, dueQuestions, examStats, hardQuestions,
-  readiness, ticketStatuses, topicMastery,
+  readiness, slowQuestions, ticketStatuses, timeStats, topicMastery,
 } from '../core/stats.ts';
 import { type BankId, type ContentPack, DomainError } from '../core/types.ts';
 import { type TicketSet, categoryInfo, isBankId, isCategoryCode, ticketSet } from '../content/categories.ts';
@@ -36,6 +37,8 @@ export interface Settings {
   readonly theme: Theme;
   /** Прерывать экзамен в момент провала, как в ГИБДД. */
   readonly examFailFast: boolean;
+  /** Дата экзамена (YYYY-MM-DD) для плана подготовки; null — не задана. */
+  readonly examDate: string | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = Object.freeze({
@@ -45,6 +48,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   dailyGoal: 40,
   theme: 'auto',
   examFailFast: true,
+  examDate: null,
 });
 
 export type ActiveSession = PracticeState | ExamState;
@@ -172,6 +176,22 @@ export class TrainerService {
     return this.startPractice('review', ids, 'Повторение');
   }
 
+  startSlow(): PracticeState {
+    return this.startPractice('slow', slowQuestions(this.bank, this.progressValue, HARD_SET_SIZE), 'Медленные вопросы');
+  }
+
+  /** Частые ошибки учеников школы (список публикует автошкола). */
+  startFrequent(ids: readonly string[]): PracticeState {
+    return this.startPractice('frequent', ids.filter((id) => this.bank.has(id)), 'Частые ошибки учеников');
+  }
+
+  /** Следующий по порядку нерешённый билет (для плана подготовки). */
+  startNextTicket(): PracticeState {
+    const next = ticketStatuses(this.bank, this.progressValue).find((t) => t.status === 'new') ?? this.bank.tickets[0];
+    if (!next) throw new DomainError('empty_session', 'В банке нет билетов');
+    return this.startTicket(next.number);
+  }
+
   startSearch(query: string): PracticeState {
     return this.startPractice('search', this.bank.search(query), `Поиск: ${query}`);
   }
@@ -222,13 +242,13 @@ export class TrainerService {
     const bank = this.sessionBank;
     if (s.kind === 'exam') {
       const { state, outcome } = answerExam(s, bank, s.cursor, displayedIndex, now);
-      if (outcome) this.progressValue = recordAnswer(this.progressValue, outcome.questionId, outcome.correct, now);
+      if (outcome) this.progressValue = recordAnswer(this.progressValue, outcome.questionId, outcome.correct, now, outcome.timeMs);
       // Остаёмся на отвеченном вопросе: к следующему переходит кнопка «Далее» (advance).
       this.afterExamChange(state.verdict === 'in_progress' ? { ...state, cursor: s.cursor } : state);
       return outcome;
     }
     const { state, outcome } = answerPractice(s, bank, s.cursor, displayedIndex, now);
-    this.progressValue = recordAnswer(this.progressValue, outcome.questionId, outcome.correct, now);
+    this.progressValue = recordAnswer(this.progressValue, outcome.questionId, outcome.correct, now, outcome.timeMs);
     if (outcome.finished && state.mode === 'ticket' && state.ticketNumber !== undefined) {
       const { wrong } = summarizePractice(state, now);
       this.progressValue = recordTicket(this.progressValue, state.bankId, state.ticketNumber, wrong, now);
@@ -241,18 +261,18 @@ export class TrainerService {
   /** «Далее»: следующий неотвеченный вопрос. */
   advance(): void {
     const s = this.requireSession();
-    this.setSession(s.kind === 'practice' ? advancePractice(s) : skipExamQuestion(s));
+    const now = this.deps.clock.now();
+    this.setSession(s.kind === 'practice' ? advancePractice(s, now) : skipExamQuestion(s, now));
   }
 
   goTo(index: number): void {
     const s = this.requireSession();
-    this.setSession(s.kind === 'exam' ? goToExamItem(s, index) : goToItem(s, index));
+    const now = this.deps.clock.now();
+    this.setSession(s.kind === 'exam' ? goToExamItem(s, index, now) : goToItem(s, index, now));
   }
 
   skip(): void {
-    const s = this.requireSession();
-    if (s.kind === 'exam') this.setSession(skipExamQuestion(s));
-    else this.setSession(advancePractice(s));
+    this.advance();
   }
 
   /** Проверка таймера экзамена; возвращает true, если состояние изменилось. */
@@ -316,10 +336,19 @@ export class TrainerService {
       today: answersToday(p, now),
       dailyGoal: this.settingsValue.dailyGoal,
       exams: examStats(p, bank.id),
+      time: timeStats(bank, p),
+      plan: this.plan(),
       topics: topicMastery(bank, p),
       tickets: ticketStatuses(bank, p),
       recentExams: p.exams.filter((e) => e.bankId === bank.id).slice(-10).reverse(),
     };
+  }
+
+  /** План подготовки к дате экзамена; null, если дата не задана. */
+  plan() {
+    const examAt = parseExamDate(this.settingsValue.examDate);
+    if (examAt === null) return null;
+    return studyPlan(examAt, ticketStatuses(this.bank, this.progressValue), this.progressValue.activity, this.deps.clock.now());
   }
 
   // ---------- Настройки и данные ----------
@@ -446,6 +475,7 @@ function sanitizeSettings(s: Record<string, unknown>): Settings {
     dailyGoal: typeof s.dailyGoal === 'number' && s.dailyGoal >= 5 && s.dailyGoal <= 500 ? Math.round(s.dailyGoal) : d.dailyGoal,
     theme: s.theme === 'light' || s.theme === 'dark' || s.theme === 'auto' ? s.theme : d.theme,
     examFailFast: bool(s.examFailFast, d.examFailFast),
+    examDate: parseExamDate(typeof s.examDate === 'string' ? s.examDate : null) !== null ? (s.examDate as string) : null,
   };
 }
 
@@ -456,6 +486,8 @@ function emptyMessage(mode: PracticeMode): string {
     case 'hard': return 'Сложных вопросов пока нет: они появятся после первых ошибок.';
     case 'review': return 'Сейчас нечего повторять — загляните позже.';
     case 'search': return 'Ничего не найдено';
+    case 'slow': return 'Медленных вопросов пока нет: они появятся, когда ответ займёт больше 45 секунд.';
+    case 'frequent': return 'Автошкола ещё не опубликовала список частых ошибок.';
     default: return 'Нет вопросов для тренировки';
   }
 }

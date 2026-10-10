@@ -159,5 +159,18 @@ export function adminView(acc: AccountService, a: AccountUi, base: string): Safe
       </table></div>
       <p class="muted note">Журнал хранится на этом устройстве.${isAdmin ? html` Чтобы заблокировать доступ, добавьте его ID из таблицы в список <span class="mono">revoked</span> файла <span class="mono">school/school.json</span> в репозитории.` : ''}</p>`
         : html`<p class="muted">Пока никого. Созданные учётные записи появятся здесь.</p>`}
+    </section>
+    <section class="card section"><h2>Резервная копия журнала</h2>
+      <p class="muted">Журнал выданных доступов и отчёты учеников хранятся только на этом устройстве. Скачайте копию (она зашифрована вашим паролем)
+        и восстановите её на новом телефоне после входа по той же ссылке-приглашению.</p>
+      <form class="backup-form" id="backup-form">
+        <label class="field" for="backup-pass"><span>Пароль</span><input type="password" id="backup-pass" name="password" required autocomplete="current-password"></label>
+        <button class="btn" type="submit" ${a.busy ? 'disabled' : ''}>Скачать копию</button>
+      </form>
+      <form class="backup-form" id="restore-form">
+        <label class="field" for="restore-file"><span>Файл копии</span><input type="file" id="restore-file" name="file" accept="application/json,.json" required></label>
+        <label class="field" for="restore-pass"><span>Пароль</span><input type="password" id="restore-pass" name="password" required autocomplete="current-password"></label>
+        <button class="btn" type="submit" ${a.busy ? 'disabled' : ''}>Восстановить</button>
+      </form>
     </section>`;
 }

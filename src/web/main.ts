@@ -1,4 +1,4 @@
-import { AccountService } from '../app/accounts.ts';
+import { AccountService, type StoredReport } from '../app/accounts.ts';
 import { systemClock } from '../app/ports.ts';
 import { type SchoolConfig, parseSchoolConfig } from '../core/credentials.ts';
 import { TrainerService } from '../app/trainer.ts';
@@ -11,13 +11,20 @@ import type { ContentPack } from '../core/types.ts';
 import { BrowserStore, PrefixedStore } from '../infra/stores.ts';
 import { type AccountUi, accountCard, adminView, emptyAccountUi, welcomeView } from './views-accounts.ts';
 import {
-  type Route, type UiState, brandHeader, homeView, resultView, searchView, sessionView, setSignCatalog, settingsView, shell,
-  signsView, statsView, ticketsView, topicsView,
+  type Route, type UiState, type ViewContext, brandHeader, homeView, resultView, searchView, sessionView, setSignCatalog,
+  settingsView, shell, signsView, statsView, ticketsView, topicsView,
 } from './views.ts';
+import { reportsView, ruleDialog, rulesView, tipsView } from './views-extra.ts';
+import { RuleIndex, parseRuleBook } from '../content/rules.ts';
+import { SimilarityIndex } from '../core/similar.ts';
+import { type StudentReport, encodeReport, frequentMistakes } from '../core/report.ts';
+import type { BankId } from '../core/types.ts';
 import { clock, html } from './dom.ts';
 import { remainingMs } from '../core/exam.ts';
 
-const ROUTES: readonly Route[] = ['home', 'tickets', 'topics', 'session', 'result', 'stats', 'signs', 'settings', 'search', 'admin'];
+const ROUTES: readonly Route[] = ['home', 'tickets', 'topics', 'session', 'result', 'stats', 'signs', 'settings', 'search', 'admin',
+  'rules', 'tips', 'reports'];
+const IMAGE_CACHE = 'pdd-images-v1';
 
 const store = new BrowserStore(() => window.localStorage);
 // Сервис создаётся после загрузки контента (официальные билеты лежат рядом со страницей отдельным файлом).
@@ -28,6 +35,14 @@ let signCatalog: CatalogGroup[] | undefined;
 let booted = false;
 let unsubscribe: (() => void) | undefined;
 const acct: AccountUi = emptyAccountUi();
+let rules: RuleIndex | undefined;
+let hardList: string[] = [];
+const similarByBank = new Map<BankId, SimilarityIndex>();
+let ruleOpen: string | null = null;
+let updateReady = false;
+let swRegistration: ServiceWorkerRegistration | undefined;
+const offline: { cached: number; total: number; busy: boolean; supported: boolean } = { cached: 0, total: 0, busy: false, supported: false };
+const reportsUi: { last: StoredReport | null; error: string | null } = { last: null, error: null };
 const root = document.getElementById('app') as HTMLElement;
 
 const ui: UiState = { route: routeFromHash(), selection: null, searchQuery: '', confirmReset: false, exportText: '', flash: null };
@@ -68,6 +83,51 @@ function startTrainer(): void {
 
 const pageBase = () => `${location.origin}${location.pathname}`;
 
+/** Индекс похожих вопросов строится один раз на банк (800 вопросов — доли секунды). */
+function similarFor(id: string) {
+  const bank = svc.sessionBank;
+  let index = similarByBank.get(bank.id);
+  if (!index) {
+    index = new SimilarityIndex(bank);
+    similarByBank.set(bank.id, index);
+  }
+  return index.similar(id);
+}
+
+/** Ссылка-отчёт ученика для автошколы: личность — цепочка удостоверений, цифры — с этого устройства. */
+function reportLink(): string | null {
+  const id = accounts.identity;
+  if (!accounts.enabled || !id || id.role !== 'student') return null;
+  const o = svc.overview();
+  const report: StudentReport = {
+    v: 1,
+    at: systemClock.now(),
+    chain: id.chain,
+    stats: {
+      bank: svc.bank.id,
+      seen: o.bank.seen, total: o.bank.total, accuracy: o.bank.accuracy, probability: o.readiness.probability,
+      ticketsSolved: o.tickets.filter((t) => t.status !== 'new').length,
+      ticketsPerfect: o.tickets.filter((t) => t.status === 'perfect').length,
+      ticketsTotal: o.tickets.length,
+      examsTotal: o.exams.total, examsPassed: o.exams.passed, streak: o.streak, avgTimeMs: o.time.avgMs,
+      mistakes: svc.progress.mistakes.filter((q) => svc.bank.has(q)).slice(0, 60),
+    },
+  };
+  return AccountService.reportLink(pageBase(), encodeReport(report));
+}
+
+function viewContext(): ViewContext {
+  return {
+    ...(rules ? { rules } : {}),
+    similar: similarFor,
+    ...(svc.plan() ? { plan: svc.plan()! } : {}),
+    frequent: hardList.filter((id) => svc.bank.has(id)),
+    reportLink: reportLink(),
+    offline: offline.supported ? { cached: offline.cached, total: offline.total, busy: offline.busy } : null,
+    updateReady,
+  };
+}
+
 function render(): void {
   applyTheme();
   // Учётные записи включены, а вход не выполнен (или открыто новое приглашение) — экран входа.
@@ -82,22 +142,27 @@ function render(): void {
     navigate('result');
     return;
   }
-  if (ui.route === 'admin' && !accounts.isStaff) ui.route = 'home';
+  if ((ui.route === 'admin' || ui.route === 'reports') && !accounts.isStaff) ui.route = 'home';
   const user = accounts.identity;
+  const ctx = viewContext();
   let body;
   switch (ui.route) {
     case 'tickets': body = ticketsView(svc); break;
     case 'topics': body = topicsView(svc); break;
-    case 'session': body = sessionView(svc, now, ui.selection); break;
+    case 'session': body = sessionView(svc, now, ui.selection, ctx); break;
     case 'result': body = resultView(svc, now); break;
-    case 'stats': body = statsView(svc, now); break;
+    case 'stats': body = statsView(svc, now, ctx); break;
     case 'signs': body = signsView(signCatalog); break;
-    case 'settings': body = html`${accountCard(accounts, acct)}${settingsView(svc, ui)}`; break;
+    case 'settings': body = html`${accountCard(accounts, acct)}${settingsView(svc, ui, ctx)}`; break;
     case 'search': body = searchView(svc, ui); break;
     case 'admin': body = adminView(accounts, acct, pageBase()); break;
-    default: body = homeView(svc, user);
+    case 'rules': body = rulesView(rules, ''); break;
+    case 'tips': body = tipsView(svc, rules); break;
+    case 'reports': body = reportsView(accounts, svc.bank, frequentMistakes(accounts.reports().map((r) => r.report)), reportsUi.last, reportsUi.error); break;
+    default: body = homeView(svc, user, ctx);
   }
-  root.innerHTML = shell(svc, ui, body, user).value;
+  root.innerHTML = shell(svc, ui, body, user).value + (ruleOpen && rules ? ruleDialog(ruleOpen, rules).value : '');
+  if (ruleOpen) (document.querySelector('.dialog .btn') as HTMLElement | null)?.focus();
 }
 
 let toastTimer: number | undefined;
@@ -248,6 +313,32 @@ const actions: Record<string, (arg: string) => void> = {
     startTrainer();
     navigate('home');
   },
+  'go-tips': () => navigate('tips'),
+  'start-slow': () => start(() => svc.startSlow()),
+  'start-frequent': () => start(() => svc.startFrequent(hardList)),
+  'start-next-ticket': () => start(() => svc.startNextTicket()),
+  rule: (arg) => { ruleOpen = arg; render(); },
+  'rule-close': () => { ruleOpen = null; render(); },
+  'reload-app': () => {
+    swRegistration?.waiting?.postMessage({ type: 'SKIP_WAITING' });
+    window.setTimeout(() => location.reload(), 1500);
+  },
+  'report-copy': () => {
+    const link = reportLink();
+    if (link) copyText(link);
+  },
+  'report-share': () => {
+    const link = reportLink();
+    if (!link) return;
+    if (navigator.share) navigator.share({ title: 'Отчёт для автошколы «Светофор»', url: link }).catch(() => undefined);
+    else copyText(link);
+  },
+  'copy-frequent': () => {
+    const ids = frequentMistakes(accounts.reports().map((r) => r.report)).map((f) => f.id);
+    navigator.clipboard.writeText(JSON.stringify({ updatedAt: new Date().toISOString().slice(0, 10), ids }, null, 2))
+      .then(() => toast('Список скопирован — вставьте его в school/hard.json'), () => toast('Не удалось скопировать', 'bad'));
+  },
+  'offline-download': () => void downloadImages(),
   'go-tickets': () => navigate('tickets'),
   'go-topics': () => navigate('topics'),
   'go-signs': () => navigate('signs'),
@@ -308,6 +399,10 @@ root.addEventListener('change', (e) => {
   const t = e.target as HTMLInputElement | HTMLSelectElement;
   const key = t.dataset.setting;
   if (key === 'dailyGoal') svc.updateSettings({ dailyGoal: Number(t.value) });
+  else if (key === 'examDate') {
+    svc.updateSettings({ examDate: t.value || null });
+    if (t.value) toast('Дата экзамена сохранена — план подготовки на главной');
+  }
   else if (key === 'theme') svc.updateSettings({ theme: t.value as 'auto' | 'light' | 'dark' });
   else if (key === 'instantFeedback' || key === 'shuffleOptions' || key === 'examFailFast') {
     svc.updateSettings({ [key]: (t as HTMLInputElement).checked });
@@ -360,6 +455,37 @@ root.addEventListener('submit', (e) => {
         acct.lastIssued = await accounts.issue({ role, name: field('name'), months: Number(field('months')) });
       });
       break;
+    case 'report-form':
+      void accountTask(async () => {
+        reportsUi.error = null;
+        try {
+          reportsUi.last = await accounts.receiveReport(field('report'));
+          toast(`Отчёт сохранён: ${reportsUi.last.name}`);
+        } catch (err) {
+          reportsUi.error = errorText(err);
+        }
+      });
+      break;
+    case 'backup-form':
+      void accountTask(async () => {
+        const backup = await accounts.exportJournal(field('password'));
+        const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `svetofor-journal-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        window.setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+        toast('Копия журнала скачана');
+      });
+      break;
+    case 'restore-form':
+      void accountTask(async () => {
+        const file = data.get('file');
+        if (!(file instanceof File)) throw new Error('Выберите файл копии');
+        const res = await accounts.importJournal(await file.text(), field('password'));
+        toast(`Восстановлено: учётных записей ${res.issued}, отчётов ${res.reports}`);
+      });
+      break;
     default: {
       const input = document.getElementById('search-input') as HTMLInputElement | null;
       ui.searchQuery = input?.value.trim() ?? '';
@@ -395,6 +521,33 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+/** Ссылка-отчёт ученика: сотрудник сохраняет, остальные видят подсказку. */
+function takeReportFromHash(): string | null {
+  if (!location.hash.startsWith('#report=')) return null;
+  const code = decodeURIComponent(location.hash.slice('#report='.length));
+  try {
+    history.replaceState(null, '', `${location.pathname}${location.search}#reports`);
+  } catch {
+    /* маршрут всё равно восстановится из памяти */
+  }
+  return code;
+}
+
+async function acceptReport(code: string): Promise<void> {
+  if (!accounts.isStaff) {
+    ui.flash = { kind: 'bad', text: 'Это ссылка-отчёт для сотрудника автошколы. Отправьте её управляющему.' };
+    ui.route = 'home';
+    return;
+  }
+  reportsUi.error = null;
+  try {
+    reportsUi.last = await accounts.receiveReport(code);
+  } catch (err) {
+    reportsUi.error = errorText(err);
+  }
+  ui.route = 'reports';
+}
+
 window.addEventListener('hashchange', () => {
   const code = booted ? takeInviteFromHash() : null;
   if (code) {
@@ -402,6 +555,12 @@ window.addEventListener('hashchange', () => {
       await openInvite(code);
     });
   }
+  const report = booted ? takeReportFromHash() : null;
+  if (report) {
+    void acceptReport(report).then(render);
+    return;
+  }
+  ruleOpen = null;
   ui.route = routeFromHash();
   ui.flash = null;
   ui.confirmReset = false;
@@ -446,6 +605,89 @@ async function loadContent(): Promise<{ pack: ContentPack; signs?: CatalogGroup[
   };
 }
 
+/** Текст ПДД и список частых ошибок школы — необязательные файлы рядом со страницей. */
+async function loadExtras(): Promise<void> {
+  const [rulesRes, hardRes] = await Promise.allSettled([
+    fetchJson('./content/rules.json').then((raw) => new RuleIndex(parseRuleBook(raw))),
+    fetchJson('./hard.json'),
+  ]);
+  if (rulesRes.status === 'fulfilled') rules = rulesRes.value;
+  if (hardRes.status === 'fulfilled') {
+    const ids = (hardRes.value as { ids?: unknown })?.ids;
+    hardList = Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [];
+  }
+}
+
+/** Все картинки банка и справочника — для скачивания «на дорогу». */
+function imageUrls(): string[] {
+  const urls = new Set<string>();
+  for (const q of pack.questions) if (q.image?.kind === 'url') urls.add(q.image.src);
+  for (const g of signCatalog ?? []) for (const s of g.items) urls.add(s.image);
+  return [...urls];
+}
+
+async function refreshOfflineStats(): Promise<void> {
+  if (!('caches' in window) || !location.protocol.startsWith('http')) return;
+  try {
+    const cache = await caches.open(IMAGE_CACHE);
+    const keys = new Set((await cache.keys()).map((r) => new URL(r.url).pathname));
+    const base = new URL('./', location.href).pathname;
+    const all = imageUrls();
+    offline.supported = true;
+    offline.total = all.length;
+    offline.cached = all.filter((u) => keys.has(base + u.replace(/^\.\//, ''))).length;
+  } catch {
+    offline.supported = false;
+  }
+}
+
+async function downloadImages(): Promise<void> {
+  if (offline.busy || !offline.supported) return;
+  offline.busy = true;
+  render();
+  try {
+    const cache = await caches.open(IMAGE_CACHE);
+    const all = imageUrls();
+    let done = 0;
+    for (let i = 0; i < all.length; i += 8) {
+      await Promise.all(all.slice(i, i + 8).map(async (u) => {
+        if (await cache.match(u)) return;
+        const res = await fetch(u);
+        if (res.ok) await cache.put(u, res);
+      }));
+      done = Math.min(all.length, i + 8);
+      if (done % 80 === 0 || done === all.length) {
+        offline.cached = done;
+        if (ui.route === 'settings') render();
+      }
+    }
+    await refreshOfflineStats();
+    toast('Картинки скачаны — тренажёр работает без интернета');
+  } catch {
+    toast('Не удалось скачать все картинки, попробуйте ещё раз', 'bad');
+  } finally {
+    offline.busy = false;
+    render();
+  }
+}
+
+function registerServiceWorker(): void {
+  if (!('serviceWorker' in navigator) || !location.protocol.startsWith('http')) return;
+  navigator.serviceWorker.register('./sw.js').then((reg) => {
+    swRegistration = reg;
+    const watch = (worker: ServiceWorker | null) => {
+      worker?.addEventListener('statechange', () => {
+        if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+          updateReady = true;
+          render();
+        }
+      });
+    };
+    watch(reg.installing);
+    reg.addEventListener('updatefound', () => watch(reg.installing));
+  }).catch(() => undefined);
+}
+
 /** Настройки автошколы: открытый ключ и список блокировок. Нет файла — учётные записи выключены (демо). */
 async function loadSchool(): Promise<SchoolConfig | null> {
   try {
@@ -455,10 +697,12 @@ async function loadSchool(): Promise<SchoolConfig | null> {
   }
 }
 
-void Promise.all([loadContent(), loadSchool()]).then(async ([content, school]) => {
+void Promise.all([loadContent(), loadSchool(), loadExtras()]).then(async ([content, school]) => {
   pack = content.pack;
   signCatalog = content.signs;
   setSignCatalog(content.signs);
+  registerServiceWorker();
+  void refreshOfflineStats().then(() => { if (ui.route === 'settings') render(); });
   if (content.packError) ui.flash = { kind: 'bad', text: `Официальные билеты не загрузились, открыт демо-банк: ${content.packError}` };
   accounts = new AccountService({ store, clock: systemClock, school });
   await accounts.restore();
@@ -472,5 +716,7 @@ void Promise.all([loadContent(), loadSchool()]).then(async ([content, school]) =
   }
   startTrainer();
   booted = true;
+  const report = takeReportFromHash();
+  if (report && accounts.enabled) await acceptReport(report);
   render();
 });

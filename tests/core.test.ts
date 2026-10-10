@@ -63,7 +63,7 @@ describe('Тренировочная сессия', () => {
       const ok = i % 3 !== 0;
       const r = answerPractice(s, bank, s.cursor, ok ? right(s, bank) : wrong(s, bank), T0 + i);
       assert.equal(r.outcome.correct, ok);
-      s = advancePractice(r.state);
+      s = advancePractice(r.state, T0 + i);
     }
     const sum = summarizePractice(s, T0 + 100);
     assert.equal(sum.wrong, 7);
@@ -124,7 +124,7 @@ describe('Прогресс и интервальное повторение', ()
       exams: [{ id: 'e', bankId: 'ZZ' }, { id: 'f', bankId: 'CD', passed: true, failReason: 'bogus' }],
       activity: { '2026-10-10': 5, bad: 3 },
     });
-    assert.deepEqual(p.questions.a, { attempts: 2, correct: 2, streak: 0, lastAt: 0, lastCorrect: false, box: 5, dueAt: 0 });
+    assert.deepEqual(p.questions.a, { attempts: 2, correct: 2, streak: 0, lastAt: 0, lastCorrect: false, box: 5, dueAt: 0, timeMs: 0 });
     assert.equal(p.questions.b, undefined);
     assert.deepEqual(p.mistakes, ['a']);
     assert.deepEqual(Object.keys(p.tickets), ['AB:1']);

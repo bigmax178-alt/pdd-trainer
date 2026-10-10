@@ -19,6 +19,8 @@ export interface QuestionStat extends SrsCard {
   readonly streak: number;
   readonly lastAt: number;
   readonly lastCorrect: boolean;
+  /** Суммарное время размышлений над вопросом, мс (среднее = timeMs / attempts). */
+  readonly timeMs: number;
 }
 
 export interface TicketResult {
@@ -83,7 +85,10 @@ export function ticketKey(bankId: BankId, number: number): string {
   return `${bankId}:${number}`;
 }
 
-export function recordAnswer(p: Progress, questionId: string, correct: boolean, now: number): Progress {
+/** Больше этого времени на один ответ не учитывается: ученик явно отвлёкся. */
+export const MAX_ANSWER_TIME_MS = 5 * 60_000;
+
+export function recordAnswer(p: Progress, questionId: string, correct: boolean, now: number, timeMs = 0): Progress {
   const prev = p.questions[questionId];
   const card = scheduleCard(prev, correct, now);
   const stat: QuestionStat = {
@@ -93,6 +98,7 @@ export function recordAnswer(p: Progress, questionId: string, correct: boolean, 
     streak: correct ? (prev?.streak ?? 0) + 1 : 0,
     lastAt: now,
     lastCorrect: correct,
+    timeMs: (prev?.timeMs ?? 0) + Math.min(MAX_ANSWER_TIME_MS, Math.max(0, Math.round(timeMs))),
   };
   let mistakes = p.mistakes;
   if (!correct && !mistakes.includes(questionId)) mistakes = [...mistakes, questionId];
@@ -239,6 +245,7 @@ export function parseProgress(raw: unknown): Progress {
         lastCorrect: s.lastCorrect === true,
         box: Math.min(nonNeg(s.box), 5),
         dueAt: nonNeg(s.dueAt),
+        timeMs: nonNeg(s.timeMs),
       };
     }
   }

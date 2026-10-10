@@ -27,6 +27,7 @@ jobs:
           path: vendor
           key: pdd-official-${{ hashFiles('scripts/official-source.ts') }}
       - run: npm run fetch:official
+      - run: npm run fetch:rules
       - run: npm run validate:content -- public/content/official.json
       - run: npm run build
       - uses: actions/configure-pages@v5

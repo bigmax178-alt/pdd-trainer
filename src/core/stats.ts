@@ -170,6 +170,37 @@ export function hardQuestions(bank: QuestionBank, p: Progress, limit: number): s
     .map((x) => x.id);
 }
 
+/** Вопрос считается «медленным», если в среднем на него уходит больше 45 секунд (на экзамене — минута на вопрос). */
+export const SLOW_ANSWER_MS = 45_000;
+
+export interface TimeStats {
+  /** Среднее время на ответ по всем попыткам, мс (0 — данных нет). */
+  readonly avgMs: number;
+  readonly slow: number;
+}
+
+export function timeStats(bank: QuestionBank, p: Progress): TimeStats {
+  let time = 0, attempts = 0, slow = 0;
+  for (const id of bank.allIds()) {
+    const s = p.questions[id];
+    if (!s || !s.timeMs) continue;
+    time += s.timeMs;
+    attempts += s.attempts;
+    if (s.timeMs / s.attempts >= SLOW_ANSWER_MS) slow++;
+  }
+  return { avgMs: attempts ? Math.round(time / attempts) : 0, slow };
+}
+
+/** «Медленные» вопросы: самые долгие в среднем первыми — на экзамене на них уходит запас времени. */
+export function slowQuestions(bank: QuestionBank, p: Progress, limit: number): string[] {
+  return bank.allIds()
+    .map((id) => ({ id, s: p.questions[id] }))
+    .filter((x): x is { id: string; s: QuestionStat } => x.s !== undefined && x.s.timeMs / x.s.attempts >= SLOW_ANSWER_MS)
+    .sort((a, b) => b.s.timeMs / b.s.attempts - a.s.timeMs / a.s.attempts)
+    .slice(0, limit)
+    .map((x) => x.id);
+}
+
 /** Очередь интервального повторения: вопросы, срок которых наступил, — самые просроченные первыми. */
 export function dueQuestions(bank: QuestionBank, p: Progress, now: number): string[] {
   return bank.allIds()

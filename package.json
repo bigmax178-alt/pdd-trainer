@@ -17,7 +17,10 @@
     "dev": "node scripts/build-web.ts --serve",
     "start:api": "node src/server/main.ts",
     "check": "npm run typecheck && npm run validate:content && npm test && npm run build",
-    "fetch:official": "node scripts/fetch-official.ts"
+    "fetch:official": "node scripts/fetch-official.ts",
+    "fetch:rules": "node scripts/fetch-rules.ts",
+    "fetch:fonts": "node scripts/fetch-fonts.ts",
+    "make:icons": "node scripts/make-icons.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
