@@ -1,0 +1,452 @@
+import type { TrainerService } from '../app/trainer.ts';
+import { type ExamState, FAIL_REASON_TEXT, remainingMs, summarizeExam } from '../core/exam.ts';
+import type { QuestionBank } from '../core/question-bank.ts';
+import { type PracticeState, type SessionItem, summarizePractice } from '../core/session.ts';
+import type { ReadinessLevel, TicketStatus } from '../core/stats.ts';
+import { dayKey } from '../core/progress.ts';
+import { BLOCKS_PER_TICKET, type Question } from '../core/types.ts';
+import { TICKET_SETS, UNCONFIRMED_CATEGORIES, ticketSet } from '../content/categories.ts';
+import { SIGNS, renderSign } from '../content/signs.ts';
+import { type SafeHtml, clock, html, pct, plural, raw, shortDate } from './dom.ts';
+
+declare global {
+  /** Подставляется сборщиком: в опубликованной версии браузер не даёт скачивать файлы. */
+  var __PDD_ARTIFACT__: boolean | undefined;
+}
+
+export type Route = 'home' | 'tickets' | 'topics' | 'session' | 'result' | 'stats' | 'signs' | 'settings' | 'search';
+
+export interface UiState {
+  route: Route;
+  searchQuery: string;
+  confirmReset: boolean;
+  exportText: string;
+  flash: { kind: 'ok' | 'bad'; text: string } | null;
+}
+
+const NAV: readonly { route: Route; title: string }[] = [
+  { route: 'home', title: 'Главная' },
+  { route: 'tickets', title: 'Билеты' },
+  { route: 'topics', title: 'Темы' },
+  { route: 'stats', title: 'Статистика' },
+  { route: 'signs', title: 'Знаки' },
+  { route: 'search', title: 'Поиск' },
+  { route: 'settings', title: 'Настройки' },
+];
+
+const LEVEL_TEXT: Record<ReadinessLevel, string> = {
+  low: 'Пока рано', medium: 'Есть пробелы', good: 'Почти готовы', ready: 'Готовы к экзамену',
+};
+const TICKET_TEXT: Record<TicketStatus, string> = {
+  new: 'не решён', perfect: 'без ошибок', passed: 'сдан бы', failed: 'не сдан',
+};
+const Q_FORMS = ['вопрос', 'вопроса', 'вопросов'] as const;
+const ERR_FORMS = ['ошибка', 'ошибки', 'ошибок'] as const;
+
+const sign = (spec: string, size = 48) => raw(renderSign(spec, size));
+const meter = (value: number, tone = '') =>
+  html`<div class="meter ${tone}" role="presentation"><span style="width:${Math.round(Math.max(0, Math.min(1, value)) * 100)}%"></span></div>`;
+
+export function shell(svc: TrainerService, ui: UiState, body: SafeHtml): SafeHtml {
+  const set = svc.ticketSet;
+  const active: Route = ui.route === 'session' || ui.route === 'result' ? 'home' : ui.route;
+  return html`
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="#home" aria-label="ПДД Тренер — на главную">${sign('2.1', 30)}<span class="brand-name">ПДД <b>Тренер</b></span></a>
+        <a class="cat-chip" href="#settings" title="Сменить комплект билетов">
+          <span class="code">${set.code}</span><span class="muted">${set.short}</span>
+        </a>
+        <nav class="nav" aria-label="Разделы">
+          ${NAV.map((n) => html`<a href="#${n.route}" ${n.route === active ? raw('aria-current="page"') : ''}>${n.title}</a>`)}
+        </nav>
+      </div>
+    </header>
+    <main id="main">
+      ${svc.warnings.map((w) => html`<div class="notice">${w}</div>`)}
+      ${ui.flash ? html`<div class="notice ${ui.flash.kind === 'ok' ? 'info' : ''}" role="status">${ui.flash.text}</div>` : ''}
+      ${body}
+    </main>`;
+}
+
+// ---------- Главная ----------
+
+export function homeView(svc: TrainerService): SafeHtml {
+  const o = svc.overview();
+  const r = o.readiness;
+  const session = svc.session;
+  const unfinished = session && (session.kind === 'exam' ? session.verdict === 'in_progress' : session.finishedAt === undefined);
+  const solvedTickets = o.tickets.filter((t) => t.status !== 'new').length;
+  const goal = Math.min(1, o.today / o.dailyGoal);
+
+  const mode = (action: string, icon: string, title: string, meta: string, disabled = false) => html`
+    <button class="mode" data-action="${action}" ${disabled ? raw('disabled') : ''}>
+      ${sign(icon)}<span><span class="mode-title">${title}</span><br><span class="mode-meta">${meta}</span></span>
+    </button>`;
+
+  return html`
+    ${!svc.isCustomPack ? html`<div class="notice info"><span>Сейчас подключён <b>демо-банк</b>: ${svc.bankFor('AB').tickets.length} билета ABM и ${svc.bankFor('CD').tickets.length} билета CD.
+      Полный официальный банк (по 40 билетов) подключается в <a href="#settings">настройках</a>.</span></div>` : ''}
+    ${unfinished ? html`<div class="notice info"><span>У вас есть незавершённая тренировка «${session.kind === 'exam' ? 'Экзамен' : session.title}».</span>
+      <a class="btn btn-primary" href="#session">Продолжить</a></div>` : ''}
+    <section class="hero">
+      <div class="card readiness">
+        <span class="label">Вероятность сдать экзамен</span>
+        <div class="readiness-top">
+          <span class="big-num">${pct(r.probability)}</span>
+          <span class="pill pill-${r.level}">${LEVEL_TEXT[r.level]}</span>
+        </div>
+        <div class="blocks">
+          ${r.blocks.map((p, i) => html`<div class="block-bar"><span>Блок ${i + 1} · ${pct(p)}</span>${meter(p, p >= 0.9 ? 'good' : p < 0.6 ? 'bad' : '')}</div>`)}
+        </div>
+        <p class="muted" style="font-size:var(--step--1)">Расчёт по правилам ГИБДД: 4 блока по 5 вопросов, за ошибку +5 вопросов того же блока, не больше 2 ошибок.</p>
+      </div>
+      <div class="hero-side">
+        <div class="card kpis">
+          <div class="kpi"><span class="label">Сегодня</span><span class="kpi-value">${o.today}<span class="muted" style="font-size:var(--step-0)">/${o.dailyGoal}</span></span>${meter(goal, goal >= 1 ? 'good' : '')}</div>
+          <div class="kpi"><span class="label">Серия</span><span class="kpi-value">${o.streak}</span><span class="muted" style="font-size:var(--step--1)">${plural(o.streak, ['день', 'дня', 'дней'])} подряд</span></div>
+          <div class="kpi"><span class="label">Точность</span><span class="kpi-value">${o.bank.attempts ? pct(o.bank.accuracy) : '—'}</span><span class="muted" style="font-size:var(--step--1)">${o.bank.seen} из ${o.bank.total}</span></div>
+        </div>
+        <div class="cta">
+          <button class="btn btn-primary" data-action="start-exam">Экзамен ГИБДД</button>
+          <button class="btn" data-action="start-smart">Умная тренировка</button>
+        </div>
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-head"><h2>Режимы</h2><span class="muted">Билеты ${svc.ticketSet.code} · категории ${svc.ticketSet.categories.join(', ')}</span></div>
+      <div class="modes">
+        ${mode('go-tickets', '6.4', 'Билеты', `${solvedTickets} из ${o.tickets.length} решено`)}
+        ${mode('start-exam', '2.5', 'Экзамен', `20 вопросов · 20 минут · ${o.exams.passed} из ${o.exams.total} сдано`)}
+        ${mode('go-topics', '4.1.4', 'Темы', `${o.topics.length} ${plural(o.topics.length, ['тема', 'темы', 'тем'])}`)}
+        ${mode('start-marathon', '5.1', 'Марафон', `все ${o.bank.total} ${plural(o.bank.total, Q_FORMS)} подряд`)}
+        ${mode('start-smart', '1.8', 'Умная тренировка', 'слабые темы, новое и повторение')}
+        ${mode('start-mistakes', '1.33', 'Работа над ошибками', `${o.bank.mistakes} ${plural(o.bank.mistakes, Q_FORMS)}`, o.bank.mistakes === 0)}
+        ${mode('start-review', '4.3', 'Повторение', o.bank.due ? `${o.bank.due} к повторению` : 'на сегодня всё', o.bank.due === 0)}
+        ${mode('start-hard', '1.17', 'Сложные вопросы', 'где вы ошибаетесь чаще', o.bank.mistakes === 0 && o.bank.attempts === o.bank.correct)}
+        ${mode('start-favorites', '2.1', 'Избранное', `${o.bank.favorites} ${plural(o.bank.favorites, Q_FORMS)}`, o.bank.favorites === 0)}
+        ${mode('go-signs', '5.19.1', 'Дорожные знаки', 'справочник с изображениями')}
+        ${mode('go-search', '3.24:?', 'Поиск', 'по тексту и пунктам ПДД')}
+        ${mode('go-stats', '5.5', 'Статистика', `${o.bank.seen} из ${o.bank.total} изучено`)}
+      </div>
+    </section>`;
+}
+
+// ---------- Билеты и темы ----------
+
+export function ticketsView(svc: TrainerService): SafeHtml {
+  const tickets = svc.overview().tickets;
+  return html`
+    <section class="section">
+      <div class="section-head"><div><h1>Билеты ${svc.ticketSet.code}</h1><p class="muted">Одни и те же для категорий ${svc.ticketSet.categories.join(', ')}</p></div>
+        <div class="legend"><span><i class="sw-new"></i>не решён</span><span><i class="sw-perfect"></i>без ошибок</span><span><i class="sw-passed"></i>1–2 ошибки</span><span><i class="sw-failed"></i>3 и больше</span></div>
+      </div>
+      <div class="tickets">
+        ${tickets.map((t) => html`
+          <button class="ticket st-${t.status}" data-action="start-ticket" data-arg="${t.number}" aria-label="Билет ${t.number}: ${TICKET_TEXT[t.status]}">
+            <span class="ticket-num">${t.number}</span>
+            <span class="ticket-status">${t.status === 'new' ? 'не решён' : t.lastErrors === 0 ? 'без ошибок' : `${t.lastErrors} ${plural(t.lastErrors ?? 0, ERR_FORMS)}`}</span>
+          </button>`)}
+      </div>
+    </section>`;
+}
+
+export function topicsView(svc: TrainerService): SafeHtml {
+  const topics = svc.overview().topics;
+  return html`
+    <section class="section">
+      <div class="section-head"><h1>Темы ПДД</h1><span class="muted">Освоение — доля верных ответов по теме</span></div>
+      <div class="card topic-list">
+        ${topics.map((t) => html`
+          <button class="topic" data-action="start-topic" data-arg="${t.topicId}">
+            <span><b>${t.title}</b><br><span class="topic-meta">${t.seen} из ${t.total} ${plural(t.total, Q_FORMS)} · выучено ${t.mastered}</span></span>
+            ${meter(t.seen ? t.accuracy : 0, t.seen && t.accuracy >= 0.9 ? 'good' : t.seen && t.accuracy < 0.6 ? 'bad' : '')}
+            <span class="mono">${t.seen ? pct(t.accuracy) : '—'}</span>
+          </button>`)}
+      </div>
+    </section>`;
+}
+
+// ---------- Вопрос ----------
+
+function questionImage(q: Question): SafeHtml | '' {
+  if (!q.image) return '';
+  if (q.image.kind === 'signs') return html`<div class="qimage">${q.image.signs.map((s) => sign(s, 120))}</div>`;
+  return html`<div class="qimage"><img src="${q.image.src}" alt="${q.image.alt ?? 'Иллюстрация к вопросу'}" loading="lazy"></div>`;
+}
+
+function cellClass(item: SessionItem, showCorrectness: boolean, current: boolean, extra: boolean): string {
+  const cls = ['cell'];
+  if (item.answer !== undefined) cls.push(showCorrectness ? (item.correct ? 'ok' : 'err') : 'done');
+  if (extra) cls.push('extra');
+  if (current) cls.push('current');
+  return cls.join(' ');
+}
+
+function cellsView(session: PracticeState | ExamState, showCorrectness: boolean): SafeHtml {
+  const cell = (item: SessionItem, i: number, extra = false) => html`
+    <button class="${cellClass(item, showCorrectness, i === session.cursor, extra)}" data-action="goto" data-arg="${i}" aria-label="Вопрос ${i + 1}">${i + 1}</button>`;
+  if (session.kind === 'exam' || session.mode === 'ticket') {
+    const base = session.items.slice(0, 20);
+    const groups = Array.from({ length: BLOCKS_PER_TICKET }, (_, b) => base.slice(b * 5, b * 5 + 5).map((it, k) => cell(it, b * 5 + k)));
+    const extras = session.items.slice(20);
+    return html`<div class="cells-scroll"><div class="cells">
+      ${groups.map((g, b) => html`<div class="cell-group" role="group" aria-label="Блок ${b + 1}"><span class="cell-group-label">Б${b + 1}</span>${g}</div>`)}
+      ${extras.length ? html`<div class="cell-group" role="group" aria-label="Дополнительные вопросы"><span class="cell-group-label">Доп</span>${extras.map((it, k) => cell(it, 20 + k, true))}</div>` : ''}
+    </div></div>`;
+  }
+  // Длинные сессии (марафон): показываем окно из 20 ячеек вокруг текущего вопроса.
+  const from = Math.max(0, Math.min(session.cursor - 10, session.items.length - 20));
+  const windowItems = session.items.slice(from, from + 20);
+  return html`<div class="cells-scroll"><div class="cells"><div class="cell-group">${windowItems.map((it, k) => cell(it, from + k))}</div></div></div>`;
+}
+
+export function sessionView(svc: TrainerService, now: number): SafeHtml {
+  const s = svc.session;
+  if (!s) {
+    return html`<section class="card section"><h1>Нет активной тренировки</h1><p class="muted">Выберите режим на главной.</p><div><a class="btn btn-primary" href="#home">На главную</a></div></section>`;
+  }
+  const bank = svc.sessionBank;
+  const item = s.items[s.cursor] as SessionItem;
+  const q = bank.get(item.questionId);
+  const isExam = s.kind === 'exam';
+  const answered = item.answer !== undefined;
+  const reveal = answered && !isExam;
+  const fav = svc.progress.favorites.includes(q.id);
+  const answeredCount = s.items.filter((i) => i.answer !== undefined).length;
+  const loc = bank.locate(q.id);
+  const finished = s.kind === 'practice' ? s.finishedAt !== undefined : s.verdict !== 'in_progress';
+  const title = isExam ? 'Экзамен' : s.title;
+  const extraInfo = isExam && (s.items[s.cursor] as { extra?: boolean }).extra ? html`<span class="pill pill-medium">дополнительный</span>` : '';
+
+  return html`
+    <section class="section" aria-live="polite">
+      <div class="session-head">
+        <h1>${title}</h1>
+        ${isExam ? html`<span class="timer ${remainingMs(s, now) < 120_000 ? 'low' : ''}" id="timer" aria-label="Осталось времени">${clock(remainingMs(s, now))}</span>` : ''}
+        <span class="muted mono">${answeredCount}/${s.items.length}</span>
+        <button class="btn btn-ghost" data-action="finish">${isExam ? 'Сдаться' : 'Завершить'}</button>
+      </div>
+      ${cellsView(s, !isExam)}
+      <article class="card qcard">
+        <div class="qmeta">
+          <span>Вопрос ${s.cursor + 1} из ${s.items.length}</span>
+          ${isExam ? html`<span>· блок ${(s.items[s.cursor] as { block: number }).block}</span>` : ''}
+          ${extraInfo}
+          ${!isExam && s.kind === 'practice' && s.mode !== 'ticket' && loc ? html`<span>· билет ${loc.ticket}, вопрос ${loc.position}</span>` : ''}
+          <span class="spacer"></span>
+          <button class="btn btn-ghost star ${fav ? 'on' : ''}" data-action="favorite" data-arg="${q.id}" aria-pressed="${fav}" title="В избранное (F)">${fav ? '★' : '☆'}</button>
+        </div>
+        ${questionImage(q)}
+        <p class="qtext">${q.text}</p>
+        <div class="options" role="group" aria-label="Варианты ответа">
+          ${item.optionOrder.map((orig, shown) => {
+            const cls = ['option'];
+            if (reveal && orig === q.correctIndex) cls.push('correct');
+            else if (reveal && orig === item.answer) cls.push('wrong');
+            else if (answered && orig === item.answer) cls.push('chosen');
+            return html`<button class="${cls.join(' ')}" data-action="answer" data-arg="${shown}" ${answered ? raw('disabled') : ''}>
+              <span class="key">${shown + 1}</span><span>${q.options[orig]}</span></button>`;
+          })}
+        </div>
+        ${reveal ? html`
+          <div class="explain ${item.correct ? '' : 'bad'}">
+            <span class="explain-title">${item.correct ? 'Верно' : `Неверно. Правильный ответ — ${item.optionOrder.indexOf(q.correctIndex) + 1}`}</span>
+            <span>${q.explanation}</span>
+            ${q.ruleRefs?.length ? html`<span class="muted" style="font-size:var(--step--1)">ПДД: ${q.ruleRefs.map((r) => (/^\d/.test(r) ? `п. ${r}` : r)).join(', ')}</span>` : ''}
+          </div>` : ''}
+        <div class="q-actions">
+          <span class="grow kbd-hint">Клавиши: <span class="kbd">1</span>–<span class="kbd">${item.optionOrder.length}</span> ответ${reveal ? html`, <span class="kbd">Enter</span> далее` : ''}${isExam ? html`, <span class="kbd">S</span> пропустить` : ''}</span>
+          ${isExam && !answered ? html`<button class="btn" data-action="skip">Пропустить</button>` : ''}
+          ${reveal ? (finished
+            ? html`<button class="btn btn-primary" data-action="to-result">Результаты</button>`
+            : html`<button class="btn btn-primary" data-action="next">Далее</button>`) : ''}
+        </div>
+      </article>
+    </section>`;
+}
+
+// ---------- Результаты ----------
+
+function reviewList(bank: QuestionBank, items: readonly SessionItem[]): SafeHtml {
+  const wrong = items.filter((i) => i.correct === false);
+  if (!wrong.length) return html`<p class="muted">Ошибок нет.</p>`;
+  return html`<div class="review">${wrong.map((it) => {
+    const q = bank.get(it.questionId);
+    return html`<article class="card review-item">
+      ${questionImage(q)}
+      <b>${q.text}</b>
+      <span class="ans ans-bad">Ваш ответ: ${q.options[it.answer ?? -1] ?? '—'}</span>
+      <span class="ans ans-good">Правильно: ${q.options[q.correctIndex]}</span>
+      <span class="muted">${q.explanation}</span>
+    </article>`;
+  })}</div>`;
+}
+
+export function resultView(svc: TrainerService, now: number): SafeHtml {
+  const s = svc.session;
+  if (!s) return sessionView(svc, now);
+  const bank = svc.sessionBank;
+  if (s.kind === 'exam') {
+    const sum = summarizeExam(s, now);
+    const pass = sum.verdict === 'passed';
+    return html`
+      <section class="card verdict ${pass ? 'pass' : 'fail'}">
+        <span class="label">Экзамен ГИБДД · билеты ${ticketSet(s.bankId).code}</span>
+        <span class="verdict-word">${pass ? 'СДАН' : 'НЕ СДАН'}</span>
+        ${sum.failReason ? html`<span>${FAIL_REASON_TEXT[sum.failReason]}</span>` : html`<span>${sum.errors ? 'Ошибки исправлены дополнительными вопросами' : 'Без единой ошибки'}</span>`}
+        <div class="facts">
+          <span class="fact"><span class="label">Время</span><b>${clock(sum.durationMs)}</b></span>
+          <span class="fact"><span class="label">Вопросов</span><b>${sum.answered}/${sum.total}</b></span>
+          <span class="fact"><span class="label">Ошибок</span><b>${sum.errors}</b></span>
+          <span class="fact"><span class="label">Доп. вопросов</span><b>${sum.extraQuestions}</b></span>
+        </div>
+      </section>
+      <section class="section"><h2>Блоки</h2>
+        <div class="blocks">${sum.blocks.map((b) => html`<div class="card block-bar"><b>Блок ${b.block}</b><span>${b.errors ? `${b.errors} ${plural(b.errors, ERR_FORMS)}` : 'без ошибок'}${b.extended ? ' · +5 вопросов' : ''}</span></div>`)}</div>
+      </section>
+      <div class="btn-row"><button class="btn btn-primary" data-action="start-exam">Новый экзамен</button>${sum.errors ? html`<button class="btn" data-action="start-mistakes">Разобрать ошибки</button>` : ''}<a class="btn" href="#home">На главную</a></div>
+      <section class="section"><h2>Разбор ошибок</h2>${reviewList(bank, s.items)}</section>`;
+  }
+  const sum = summarizePractice(s, now);
+  const ok = sum.answered > 0 && sum.wrong === 0;
+  return html`
+    <section class="card verdict ${ok ? 'pass' : sum.wrong > 2 ? 'fail' : ''}">
+      <span class="label">${s.title}</span>
+      <span class="verdict-word">${sum.correct} из ${sum.total}</span>
+      <span>${sum.answered < sum.total ? `Отвечено ${sum.answered} из ${sum.total}. ` : ''}${sum.wrong ? `${sum.wrong} ${plural(sum.wrong, ERR_FORMS)} — вопросы добавлены в «Работу над ошибками»` : 'Без ошибок'}</span>
+      <div class="facts"><span class="fact"><span class="label">Время</span><b>${clock(sum.durationMs)}</b></span></div>
+    </section>
+    <div class="btn-row">
+      ${s.mode === 'ticket' && s.ticketNumber !== undefined ? html`<button class="btn btn-primary" data-action="start-ticket" data-arg="${s.ticketNumber}">Решить ещё раз</button>
+        ${bank.tickets.some((t) => t.number === (s.ticketNumber ?? 0) + 1) ? html`<button class="btn" data-action="start-ticket" data-arg="${(s.ticketNumber ?? 0) + 1}">Следующий билет</button>` : ''}` : ''}
+      ${sum.wrong ? html`<button class="btn" data-action="start-mistakes">Работа над ошибками</button>` : ''}
+      <a class="btn" href="#home">На главную</a>
+    </div>
+    <section class="section"><h2>Разбор ошибок</h2>${reviewList(bank, s.items)}</section>`;
+}
+
+// ---------- Статистика ----------
+
+export function statsView(svc: TrainerService, now: number): SafeHtml {
+  const o = svc.overview();
+  const days = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date(now);
+    const ts = new Date(d.getFullYear(), d.getMonth(), d.getDate() - (13 - i), 12).getTime();
+    return { label: String(new Date(ts).getDate()), value: svc.progress.activity[dayKey(ts)] ?? 0 };
+  });
+  const max = Math.max(10, ...days.map((d) => d.value));
+  const weakest = [...o.topics].filter((t) => t.seen > 0).sort((a, b) => a.accuracy - b.accuracy).slice(0, 5);
+  return html`
+    <section class="section"><h1>Статистика · билеты ${svc.ticketSet.code}</h1>
+      <div class="stat-grid">
+        <div class="card kpi"><span class="label">Вероятность сдачи</span><span class="kpi-value">${pct(o.readiness.probability)}</span></div>
+        <div class="card kpi"><span class="label">Изучено вопросов</span><span class="kpi-value">${o.bank.seen}/${o.bank.total}</span></div>
+        <div class="card kpi"><span class="label">Выучено</span><span class="kpi-value">${o.bank.mastered}</span></div>
+        <div class="card kpi"><span class="label">Точность</span><span class="kpi-value">${o.bank.attempts ? pct(o.bank.accuracy) : '—'}</span></div>
+        <div class="card kpi"><span class="label">Экзамены</span><span class="kpi-value">${o.exams.passed}/${o.exams.total}</span></div>
+        <div class="card kpi"><span class="label">Серия</span><span class="kpi-value">${o.streak} ${plural(o.streak, ['день', 'дня', 'дней'])}</span></div>
+      </div>
+    </section>
+    <section class="card section"><div class="section-head"><h2>Ответы за 14 дней</h2><span class="muted">цель — ${o.dailyGoal} в день</span></div>
+      <div class="bars" role="img" aria-label="Количество ответов по дням">${days.map((d) => html`<div title="${d.value} ответов"><span style="height:${Math.round((d.value / max) * 100)}%"></span></div>`)}</div>
+      <div class="bars-x">${days.map((d) => html`<span>${d.label}</span>`)}</div>
+    </section>
+    <section class="section"><h2>Слабые темы</h2>
+      ${weakest.length ? html`<div class="card topic-list">${weakest.map((t) => html`
+        <button class="topic" data-action="start-topic" data-arg="${t.topicId}"><span><b>${t.title}</b><br><span class="topic-meta">${t.seen} из ${t.total} изучено</span></span>${meter(t.accuracy, t.accuracy < 0.6 ? 'bad' : '')}<span class="mono">${pct(t.accuracy)}</span></button>`)}</div>`
+        : html`<p class="muted">Решите несколько вопросов, и здесь появятся темы, требующие внимания.</p>`}
+    </section>
+    <section class="section"><h2>История экзаменов</h2>
+      ${o.recentExams.length ? html`<div class="card table-wrap"><table>
+        <thead><tr><th>Дата</th><th>Результат</th><th>Ошибок</th><th>Вопросов</th><th>Время</th></tr></thead>
+        <tbody>${o.recentExams.map((e) => html`<tr><td>${shortDate(e.finishedAt)}</td>
+          <td><span class="pill ${e.passed ? 'pill-good' : 'pill-low'}">${e.passed ? 'сдан' : 'не сдан'}</span></td>
+          <td class="num">${e.errors}</td><td class="num">${e.total}</td><td class="num mono">${clock(e.finishedAt - e.startedAt)}</td></tr>`)}</tbody>
+      </table></div>` : html`<p class="muted">Экзаменов пока не было.</p>`}
+    </section>`;
+}
+
+// ---------- Знаки, поиск ----------
+
+export function signsView(): SafeHtml {
+  const groups = [...new Set(SIGNS.map((s) => s.group))];
+  return html`
+    <section class="section"><h1>Дорожные знаки</h1><p class="muted">Схематичные изображения по ГОСТ Р 52290. Знаки рисуются векторно и используются в вопросах.</p></section>
+    ${groups.map((g) => html`<section class="section"><h2>${g}</h2><div class="sign-grid">
+      ${SIGNS.filter((s) => s.group === g).map((s) => html`<div class="card sign-card">${sign(s.code + (s.defaultValue ? `:${s.defaultValue}` : ''), 84)}<span class="sign-code">${s.code}</span><span>${s.title}</span></div>`)}
+    </div></section>`)}`;
+}
+
+export function searchView(svc: TrainerService, ui: UiState): SafeHtml {
+  const results = ui.searchQuery ? svc.bank.search(ui.searchQuery, 30) : [];
+  return html`
+    <section class="section"><h1>Поиск по вопросам</h1>
+      <form class="search-form" id="search-form" role="search">
+        <input type="search" id="search-input" name="q" value="${ui.searchQuery}" placeholder="Например: обгон, 50 м, шлагбаум, 12.4" aria-label="Поисковый запрос">
+        <button class="btn btn-primary" type="submit">Найти</button>
+      </form>
+      ${ui.searchQuery ? html`<p class="muted">Найдено: ${results.length}</p>` : ''}
+      ${results.length > 1 ? html`<div><button class="btn" data-action="start-search">Решить все найденные</button></div>` : ''}
+      <div class="card topic-list">${results.map((id) => {
+        const q = svc.bank.get(id);
+        const loc = svc.bank.locate(id);
+        return html`<button class="topic" data-action="start-question" data-arg="${id}"><span><b>${q.text}</b><br><span class="topic-meta">Билет ${loc?.ticket}, вопрос ${loc?.position}</span></span><span></span><span class="mono">→</span></button>`;
+      })}</div>
+    </section>`;
+}
+
+// ---------- Настройки ----------
+
+export function settingsView(svc: TrainerService, ui: UiState): SafeHtml {
+  const st = svc.settings;
+  const toggle = (key: 'instantFeedback' | 'shuffleOptions' | 'examFailFast', title: string, hint: string) => html`
+    <label class="form-row" for="set-${key}"><div><b>${title}</b><br><span class="muted">${hint}</span></div>
+      <input class="switch" type="checkbox" id="set-${key}" data-setting="${key}" ${st[key] ? raw('checked') : ''}></label>`;
+  return html`
+    <section class="section"><h1>Комплект билетов</h1>
+      <p class="muted">В ГИБДД всего два комплекта билетов. Все категории внутри комплекта сдают одни и те же вопросы:
+        если вы получаете A и B одновременно, учить нужно один комплект ABM.</p>
+      <div class="set-grid">${TICKET_SETS.map((t) => html`
+        <button class="set-option" data-action="set-bank" data-arg="${t.bank}" aria-pressed="${t.bank === st.bank}">
+          <span class="set-code">${t.code}</span>
+          <span class="set-body"><b>${t.vehicles}</b>
+            <span class="chips" aria-label="Категории">${t.categories.map((c) => html`<span class="chip">${c}</span>`)}</span>
+          </span>
+        </button>`)}
+      </div>
+      <p class="muted note">Комплекты совпадают примерно на три четверти, в CD больше вопросов о грузовых автомобилях, автобусах и маршрутном транспорте.
+        Для ${UNCONFIRMED_CATEGORIES.join(', ')} теоретический экзамен тоже обязателен, но по какому комплекту он проходит, в открытых правилах не указано: уточните в автошколе.</p>
+    </section>
+    <section class="card section"><h2>Тренировка</h2>
+      <div>
+        ${toggle('instantFeedback', 'Показывать ответ сразу', 'Правильный ответ и пояснение после каждого вопроса (кроме экзамена)')}
+        ${toggle('shuffleOptions', 'Перемешивать варианты', 'В тренировках, кроме билетов: проверяет знание, а не память о позиции ответа')}
+        ${toggle('examFailFast', 'Строгий экзамен', 'Экзамен завершается сразу при провале, как в ГИБДД')}
+        <label class="form-row" for="set-goal"><div><b>Дневная цель</b><br><span class="muted">Сколько вопросов решать в день</span></div>
+          <select id="set-goal" data-setting="dailyGoal">${[20, 40, 60, 100, 200].map((n) => html`<option value="${n}" ${n === st.dailyGoal ? raw('selected') : ''}>${n}</option>`)}</select></label>
+        <label class="form-row" for="set-theme"><div><b>Тема оформления</b></div>
+          <select id="set-theme" data-setting="theme">${(['auto', 'light', 'dark'] as const).map((t) => html`<option value="${t}" ${t === st.theme ? raw('selected') : ''}>${{ auto: 'как в системе', light: 'светлая', dark: 'тёмная' }[t]}</option>`)}</select></label>
+      </div>
+    </section>
+    <section class="card section"><h2>Банк вопросов</h2>
+      <p>Сейчас: <b>${svc.pack.title}</b> <span class="muted">(версия ${svc.pack.version}, ${svc.pack.questions.length} ${plural(svc.pack.questions.length, Q_FORMS)})</span></p>
+      <p class="muted">Полный официальный банк собирается командой <span class="mono">npm run import:bank</span> из открытого набора билетов и загружается сюда JSON-файлом.</p>
+      <div class="btn-row">
+        <label class="btn" for="pack-file">Загрузить банк (JSON)</label><input type="file" id="pack-file" accept="application/json,.json" hidden>
+        ${svc.isCustomPack ? html`<button class="btn" data-action="reset-pack">Вернуть демо-банк</button>` : ''}
+      </div>
+    </section>
+    <section class="card section"><h2>Мои данные</h2>
+      <p class="muted">Прогресс хранится на этом устройстве. Экспорт и импорт переносят его на другое устройство; при импорте данные объединяются, ничего не теряется.</p>
+      <div class="btn-row">
+        <button class="btn" data-action="export">Показать экспорт</button>
+        <label class="btn" for="import-file">Импорт из файла</label><input type="file" id="import-file" accept="application/json,.json" hidden>
+        ${ui.confirmReset
+          ? html`<button class="btn btn-danger" data-action="reset-confirm">Да, удалить весь прогресс</button><button class="btn" data-action="reset-cancel">Отмена</button>`
+          : html`<button class="btn btn-danger" data-action="reset-ask">Сбросить прогресс</button>`}
+      </div>
+      ${ui.exportText ? html`<textarea id="export-text" readonly aria-label="Данные для экспорта">${ui.exportText}</textarea>
+        <div class="btn-row"><button class="btn" data-action="copy-export">Скопировать</button>${globalThis.__PDD_ARTIFACT__ ? '' : html`<a class="btn" id="export-download" download="pdd-progress.json" href="data:application/json;charset=utf-8,${encodeURIComponent(ui.exportText)}">Скачать файл</a>`}</div>` : ''}
+    </section>`;
+}

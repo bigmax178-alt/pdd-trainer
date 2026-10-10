@@ -1,0 +1,26 @@
+{
+  "name": "pdd-trainer",
+  "version": "1.0.0",
+  "description": "Тренажёр теоретического экзамена ГИБДД (ПДД РФ) для всех категорий прав",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-reporter=spec \"tests/**/*.test.ts\"",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"src/**\" \"tests/**/*.test.ts\"",
+    "validate:content": "node scripts/validate-content.ts",
+    "import:bank": "node scripts/import-bank.ts",
+    "build": "node scripts/build-web.ts",
+    "dev": "node scripts/build-web.ts --serve",
+    "start:api": "node src/server/main.ts",
+    "check": "npm run typecheck && npm run validate:content && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
