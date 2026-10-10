@@ -4,9 +4,9 @@
  *   node scripts/build-web.ts --serve   → то же + локальный сервер http://localhost:5173
  */
 import { build } from 'esbuild';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { dirname, join } from 'node:path';
+import { dirname, extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,10 +59,35 @@ await writeFile(join(dist, 'index.html'), page);
 await writeFile(join(dist, 'artifact.html'), `${head}\n${body(artifactJs)}\n`);
 console.log(`dist/index.html — ${(page.length / 1024).toFixed(1)} КБ (JS ${(js.length / 1024).toFixed(1)} КБ, CSS ${(css.length / 1024).toFixed(1)} КБ)`);
 
+// Официальные билеты и картинки (npm run fetch:official) кладутся рядом со страницей; без них работает демо-банк.
+const pub = join(root, 'public');
+const hasOfficial = await access(join(pub, 'content/official.json')).then(() => true, () => false);
+if (hasOfficial) {
+  await cp(pub, dist, { recursive: true });
+  console.log('Официальный банк билетов скопирован в dist/');
+} else {
+  console.log('Официальный банк не подготовлен (npm run fetch:official) — сайт откроется с демо-банком');
+}
+
 if (process.argv.includes('--serve')) {
   const port = Number(process.env.PORT ?? 5173);
-  createServer((_req, res) => {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    res.end(page);
+  const types: Record<string, string> = {
+    '.html': 'text/html; charset=utf-8', '.json': 'application/json; charset=utf-8',
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.svg': 'image/svg+xml', '.gif': 'image/gif',
+  };
+  createServer(async (req, res) => {
+    const path = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname);
+    const file = normalize(join(dist, path === '/' ? 'index.html' : path));
+    if (!file.startsWith(dist)) {
+      res.writeHead(403).end();
+      return;
+    }
+    try {
+      const data = await readFile(file);
+      res.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store' });
+      res.end(data);
+    } catch {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('Не найдено');
+    }
   }).listen(port, () => console.log(`http://localhost:${port}`));
 }

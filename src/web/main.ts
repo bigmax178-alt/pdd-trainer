@@ -2,6 +2,10 @@ import { systemClock } from '../app/ports.ts';
 import { TrainerService } from '../app/trainer.ts';
 import { DomainError } from '../core/types.ts';
 import { findTicketSet } from '../content/categories.ts';
+import { DEMO_PACK } from '../content/demo-bank.ts';
+import { PackFormatError, parsePack } from '../content/pack-io.ts';
+import { type CatalogGroup, parseSignCatalog } from '../content/signs.ts';
+import type { ContentPack } from '../core/types.ts';
 import { BrowserStore } from '../infra/stores.ts';
 import {
   type Route, type UiState, homeView, resultView, searchView, sessionView, settingsView, shell,
@@ -13,7 +17,10 @@ import { remainingMs } from '../core/exam.ts';
 const ROUTES: readonly Route[] = ['home', 'tickets', 'topics', 'session', 'result', 'stats', 'signs', 'settings', 'search'];
 
 const store = new BrowserStore(() => window.localStorage);
-const svc = new TrainerService({ store, clock: systemClock });
+// Сервис создаётся после загрузки контента (официальные билеты лежат рядом со страницей отдельным файлом).
+let svc!: TrainerService;
+let signCatalog: CatalogGroup[] | undefined;
+let booted = false;
 const root = document.getElementById('app') as HTMLElement;
 
 const ui: UiState = { route: routeFromHash(), searchQuery: '', confirmReset: false, exportText: '', flash: null };
@@ -58,7 +65,7 @@ function render(): void {
     case 'session': body = sessionView(svc, now); break;
     case 'result': body = resultView(svc, now); break;
     case 'stats': body = statsView(svc, now); break;
-    case 'signs': body = signsView(); break;
+    case 'signs': body = signsView(signCatalog); break;
     case 'settings': body = settingsView(svc, ui); break;
     case 'search': body = searchView(svc, ui); break;
     default: body = homeView(svc);
@@ -103,18 +110,26 @@ function onAnswer(displayed: number): void {
       const block = (s.items[s.cursor] as { block?: number }).block ?? 0;
       toast(`Ошибка в блоке ${block}: добавлено ${outcome.addedQuestions} вопросов и 5 минут`, 'bad');
     }
-    if (after.verdict !== 'in_progress') navigate('result');
-  } else if (!svc.settings.instantFeedback) {
-    if (after.finishedAt !== undefined) navigate('result');
-    else svc.advance();
+    if (after.verdict !== 'in_progress') {
+      navigate('result');
+      return;
+    }
   }
+  // Автоперехода нет: показываем разбор и панель «Далее», фокус — на кнопке (Enter/пробел нажимают её).
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.querySelector('.explain')?.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' });
+  document.getElementById('next-btn')?.focus({ preventScroll: true });
 }
 
 function onNext(): void {
   const s = svc.session;
-  if (!s || s.kind !== 'practice') return;
-  if (s.finishedAt !== undefined) navigate('result');
-  else svc.advance();
+  if (!s) return;
+  if (s.kind === 'practice' && s.finishedAt !== undefined) {
+    navigate('result');
+    return;
+  }
+  svc.advance();
+  window.scrollTo(0, 0);
 }
 
 const actions: Record<string, (arg: string) => void> = {
@@ -206,7 +221,7 @@ root.addEventListener('submit', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (ui.route !== 'session' || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!booted || ui.route !== 'session' || e.metaKey || e.ctrlKey || e.altKey) return;
   const target = e.target as HTMLElement;
   if (target.closest('input, textarea, select')) return;
   const s = svc.session;
@@ -240,6 +255,7 @@ window.addEventListener('hashchange', () => {
 
 // Таймер экзамена: обновляем только табло, полная перерисовка — при истечении времени.
 window.setInterval(() => {
+  if (!booted) return;
   const s = svc.session;
   if (!s || s.kind !== 'exam' || s.verdict !== 'in_progress') return;
   if (svc.tick()) {
@@ -255,5 +271,30 @@ window.setInterval(() => {
   }
 }, 1000);
 
-svc.subscribe(render);
-render();
+async function fetchJson(url: string): Promise<unknown> {
+  const res = await fetch(url, { cache: 'no-cache' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+/** Официальные билеты и справочник знаков; без них (файл открыт локально, нет сети) — демо-банк. */
+async function loadContent(): Promise<{ pack: ContentPack; signs?: CatalogGroup[]; packError?: string }> {
+  const [pack, signs] = await Promise.allSettled([
+    fetchJson('./content/official.json').then(parsePack),
+    fetchJson('./content/signs.json').then(parseSignCatalog),
+  ]);
+  return {
+    pack: pack.status === 'fulfilled' ? pack.value : DEMO_PACK,
+    ...(signs.status === 'fulfilled' ? { signs: signs.value } : {}),
+    ...(pack.status === 'rejected' && pack.reason instanceof PackFormatError ? { packError: pack.reason.message } : {}),
+  };
+}
+
+void loadContent().then(({ pack, signs, packError }) => {
+  svc = new TrainerService({ store, clock: systemClock, defaultPack: pack });
+  signCatalog = signs;
+  if (packError) ui.flash = { kind: 'bad', text: `Официальные билеты не загрузились, открыт демо-банк: ${packError}` };
+  booted = true;
+  svc.subscribe(render);
+  render();
+});

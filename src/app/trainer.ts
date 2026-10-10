@@ -110,6 +110,7 @@ export class TrainerService {
   get session(): ActiveSession | null { return this.sessionValue; }
   get ticketSet(): TicketSet { return ticketSet(this.settingsValue.bank); }
   get isCustomPack(): boolean { return this.packValue !== this.deps.defaultPack; }
+  get isDemoPack(): boolean { return this.packValue === DEMO_PACK; }
 
   bankFor(id: BankId): QuestionBank {
     let bank = this.banks.get(id);
@@ -222,7 +223,8 @@ export class TrainerService {
     if (s.kind === 'exam') {
       const { state, outcome } = answerExam(s, bank, s.cursor, displayedIndex, now);
       if (outcome) this.progressValue = recordAnswer(this.progressValue, outcome.questionId, outcome.correct, now);
-      this.afterExamChange(state);
+      // Остаёмся на отвеченном вопросе: к следующему переходит кнопка «Далее» (advance).
+      this.afterExamChange(state.verdict === 'in_progress' ? { ...state, cursor: s.cursor } : state);
       return outcome;
     }
     const { state, outcome } = answerPractice(s, bank, s.cursor, displayedIndex, now);
@@ -236,10 +238,10 @@ export class TrainerService {
     return outcome;
   }
 
-  /** Следующий вопрос после разбора ответа. */
+  /** «Далее»: следующий неотвеченный вопрос. */
   advance(): void {
     const s = this.requireSession();
-    if (s.kind === 'practice') this.setSession(advancePractice(s));
+    this.setSession(s.kind === 'practice' ? advancePractice(s) : skipExamQuestion(s));
   }
 
   goTo(index: number): void {

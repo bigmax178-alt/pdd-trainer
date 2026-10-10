@@ -44,10 +44,29 @@ describe('Сервис тренажёра', () => {
     svc.startExam();
     const out = answerCurrent(svc, false);
     assert.ok(out && 'addedQuestions' in out && out.addedQuestions === 5);
-    while ((svc.session as ExamState).verdict === 'in_progress') answerCurrent(svc, true);
+    while ((svc.session as ExamState).verdict === 'in_progress') {
+      svc.advance();
+      answerCurrent(svc, true);
+    }
     assert.equal((svc.session as ExamState).verdict, 'passed');
     assert.equal(svc.progress.exams.length, 1);
     assert.equal(svc.overview().exams.passed, 1);
+  });
+
+  it('после ответа остаёмся на вопросе до «Далее» — и в тренировке, и на экзамене', () => {
+    const { svc } = setup();
+    svc.startExam();
+    answerCurrent(svc, true);
+    assert.equal(svc.session?.cursor, 0, 'экзамен не перескакивает сам');
+    assert.notEqual(svc.session?.items[0]?.answer, undefined);
+    svc.advance();
+    assert.equal(svc.session?.cursor, 1);
+    svc.updateSettings({ instantFeedback: false });
+    svc.startTicket(1);
+    answerCurrent(svc, false);
+    assert.equal(svc.session?.cursor, 0, 'и без мгновенного разбора автоперехода нет');
+    svc.advance();
+    assert.equal(svc.session?.cursor, 1);
   });
 
   it('таймер: по истечении времени экзамен не сдан и записан', () => {

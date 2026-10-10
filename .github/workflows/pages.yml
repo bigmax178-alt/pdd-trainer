@@ -21,6 +21,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # Официальные билеты и картинки: зафиксированный снимок открытого набора, кешируется по версии источника.
+      - uses: actions/cache@v4
+        with:
+          path: vendor
+          key: pdd-official-${{ hashFiles('scripts/official-source.ts') }}
+      - run: npm run fetch:official
+      - run: npm run validate:content -- public/content/official.json
       - run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

@@ -211,6 +211,8 @@ main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 64px; display: grid
 }
 .qimage svg { width: 120px; height: 120px; }
 .qimage img { max-width: 100%; border-radius: 6px; }
+.qimage.photo { padding: 0; background: transparent; }
+.qimage.photo img { display: block; width: 100%; max-width: 720px; height: auto; margin: 0 auto; border-radius: 8px; }
 .qtext { font-size: var(--step-1); font-weight: 500; line-height: 1.45; max-width: 68ch; }
 .options { display: grid; gap: 8px; }
 .option {
@@ -237,6 +239,22 @@ main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 64px; display: grid
 .star.on { color: var(--sign-yellow); }
 .kbd-hint { font-size: var(--step--1); color: var(--muted); }
 .kbd { font-family: var(--font-mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
+
+/* Панель «Далее» всплывает после ответа и всегда видна без прокрутки. */
+.has-next { padding-bottom: 88px; }
+.next-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 15;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(8px);
+  border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(20, 32, 43, .08);
+  animation: next-in .18s ease-out;
+}
+.next-bar-inner { max-width: 1048px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.next-status { font: 600 var(--step-1)/1.2 var(--font-display); }
+.next-status.ok { color: var(--good); }
+.next-status.bad { color: var(--bad); }
+.next-bar .btn { min-width: 160px; min-height: 52px; font-size: var(--step-1); }
+@keyframes next-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
 /* ---------- Результат ---------- */
 .verdict { display: grid; gap: 8px; padding: 24px; text-align: center; justify-items: center; }
@@ -268,7 +286,10 @@ td.num { font-variant-numeric: tabular-nums; }
 /* ---------- Знаки ---------- */
 .sign-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .sign-card { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 16px 10px; }
-.sign-card svg { width: 84px; height: 84px; }
+.sign-card svg, .sign-card img { width: 84px; height: 84px; object-fit: contain; }
+.sign-card details { font-size: var(--step--1); color: var(--muted); text-align: left; width: 100%; }
+.sign-card summary { cursor: pointer; text-align: center; color: var(--accent); }
+.sign-card details p { margin-top: 6px; }
 .sign-code { font: 700 var(--step--1)/1 var(--font-mono); color: var(--accent); }
 
 /* ---------- Настройки ---------- */
@@ -301,7 +322,7 @@ textarea { width: 100%; min-height: 120px; font: .8125rem/1.4 var(--font-mono); 
 
 /* ---------- Тост ---------- */
 .toast {
-  position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  position: fixed; left: 50%; top: calc(76px + env(safe-area-inset-top, 0px)); transform: translateX(-50%);
   background: var(--fg); color: var(--bg); padding: 12px 18px; border-radius: 10px; box-shadow: var(--shadow);
   max-width: min(520px, calc(100vw - 32px)); font-weight: 500; z-index: 20;
 }
@@ -318,6 +339,7 @@ textarea { width: 100%; min-height: 120px; font: .8125rem/1.4 var(--font-mono); 
   .qimage svg { width: 96px; height: 96px; }
   .cell { width: 28px; height: 28px; }
   .verdict-word { font-size: 2rem; }
+  .next-bar .btn { flex: 1; min-width: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

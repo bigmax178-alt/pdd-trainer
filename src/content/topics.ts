@@ -28,10 +28,23 @@ export const TOPICS: readonly Topic[] = [
   { id: 'firstaid', title: 'Оказание первой помощи' },
 ];
 
-/** Транслитерация названия темы в стабильный идентификатор (для импорта внешних банков). */
+/** Официальные формулировки тем в банке ГИБДД, совпадающие по смыслу с темами тренажёра. */
+const TOPIC_ALIASES: Readonly<Record<string, string>> = {
+  'применение аварийной сигнализации и знака аварийной остановки': 'hazard',
+  'пешеходные переходы и места остановок маршрутных транспортных средств': 'crossings',
+  'пользование внешними световыми приборами и звуковыми сигналами': 'lights',
+  'неисправности и условия допуска транспортных средств к эксплуатации': 'defects',
+  'безопасность движения и техника управления автомобилем': 'safety',
+  'оказание доврачебной медицинской помощи': 'firstaid',
+};
+
+const normTitle = (s: string) => s.trim().toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
+
+/** Идентификатор темы по названию: известные темы и их официальные формулировки, иначе транслитерация. */
 export function topicIdFromTitle(title: string): string {
-  const known = TOPICS.find((t) => t.title.toLowerCase() === title.trim().toLowerCase());
-  if (known) return known.id;
+  const norm = normTitle(title);
+  const known = TOPICS.find((t) => normTitle(t.title) === norm)?.id ?? TOPIC_ALIASES[norm];
+  if (known) return known;
   const map: Record<string, string> = {
     а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm',
     н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch',

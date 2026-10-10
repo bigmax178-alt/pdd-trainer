@@ -9,9 +9,10 @@
  * Результат — JSON-пакет, который загружается в веб-клиенте (Настройки → Банк вопросов)
  * или на сервер (переменная CONTENT_FILE).
  */
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { importExternalBank } from '../src/content/pack-io.ts';
+import { readTickets } from './official-source.ts';
 
 const args = process.argv.slice(2);
 const flag = (name: string) => {
@@ -24,12 +25,6 @@ if (!source) {
   process.exit(2);
 }
 const out = flag('--out') ?? 'data/bank.json';
-
-async function readTickets(dir: string): Promise<unknown[]> {
-  const files = (await readdir(dir)).filter((f) => f.endsWith('.json'));
-  files.sort((a, b) => Number(/\d+/.exec(a)?.[0] ?? 0) - Number(/\d+/.exec(b)?.[0] ?? 0));
-  return Promise.all(files.map(async (f) => JSON.parse(await readFile(join(dir, f), 'utf8')) as unknown));
-}
 
 const imageBase = flag('--image-base');
 const { pack, issues } = importExternalBank({

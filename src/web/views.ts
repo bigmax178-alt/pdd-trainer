@@ -6,7 +6,7 @@ import type { ReadinessLevel, TicketStatus } from '../core/stats.ts';
 import { dayKey } from '../core/progress.ts';
 import { BLOCKS_PER_TICKET, type Question } from '../core/types.ts';
 import { TICKET_SETS, UNCONFIRMED_CATEGORIES, ticketSet } from '../content/categories.ts';
-import { SIGNS, renderSign } from '../content/signs.ts';
+import { type CatalogGroup, SIGNS, renderSign } from '../content/signs.ts';
 import { type SafeHtml, clock, html, pct, plural, raw, shortDate } from './dom.ts';
 
 declare global {
@@ -85,7 +85,7 @@ export function homeView(svc: TrainerService): SafeHtml {
     </button>`;
 
   return html`
-    ${!svc.isCustomPack ? html`<div class="notice info"><span>Сейчас подключён <b>демо-банк</b>: ${svc.bankFor('AB').tickets.length} билета ABM и ${svc.bankFor('CD').tickets.length} билета CD.
+    ${svc.isDemoPack ? html`<div class="notice info"><span>Сейчас подключён <b>демо-банк</b>: ${svc.bankFor('AB').tickets.length} билета ABM и ${svc.bankFor('CD').tickets.length} билета CD.
       Полный официальный банк (по 40 билетов) подключается в <a href="#settings">настройках</a>.</span></div>` : ''}
     ${unfinished ? html`<div class="notice info"><span>У вас есть незавершённая тренировка «${session.kind === 'exam' ? 'Экзамен' : session.title}».</span>
       <a class="btn btn-primary" href="#session">Продолжить</a></div>` : ''}
@@ -172,7 +172,7 @@ export function topicsView(svc: TrainerService): SafeHtml {
 function questionImage(q: Question): SafeHtml | '' {
   if (!q.image) return '';
   if (q.image.kind === 'signs') return html`<div class="qimage">${q.image.signs.map((s) => sign(s, 120))}</div>`;
-  return html`<div class="qimage"><img src="${q.image.src}" alt="${q.image.alt ?? 'Иллюстрация к вопросу'}" loading="lazy"></div>`;
+  return html`<div class="qimage photo"><img src="${q.image.src}" alt="${q.image.alt ?? 'Иллюстрация к вопросу'}" decoding="async"></div>`;
 }
 
 function cellClass(item: SessionItem, showCorrectness: boolean, current: boolean, extra: boolean): string {
@@ -211,7 +211,7 @@ export function sessionView(svc: TrainerService, now: number): SafeHtml {
   const q = bank.get(item.questionId);
   const isExam = s.kind === 'exam';
   const answered = item.answer !== undefined;
-  const reveal = answered && !isExam;
+  const reveal = answered && !isExam && svc.settings.instantFeedback;
   const fav = svc.progress.favorites.includes(q.id);
   const answeredCount = s.items.filter((i) => i.answer !== undefined).length;
   const loc = bank.locate(q.id);
@@ -220,14 +220,14 @@ export function sessionView(svc: TrainerService, now: number): SafeHtml {
   const extraInfo = isExam && (s.items[s.cursor] as { extra?: boolean }).extra ? html`<span class="pill pill-medium">дополнительный</span>` : '';
 
   return html`
-    <section class="section" aria-live="polite">
+    <section class="section ${answered ? 'has-next' : ''}" aria-live="polite">
       <div class="session-head">
         <h1>${title}</h1>
         ${isExam ? html`<span class="timer ${remainingMs(s, now) < 120_000 ? 'low' : ''}" id="timer" aria-label="Осталось времени">${clock(remainingMs(s, now))}</span>` : ''}
         <span class="muted mono">${answeredCount}/${s.items.length}</span>
         <button class="btn btn-ghost" data-action="finish">${isExam ? 'Сдаться' : 'Завершить'}</button>
       </div>
-      ${cellsView(s, !isExam)}
+      ${cellsView(s, !isExam && svc.settings.instantFeedback)}
       <article class="card qcard">
         <div class="qmeta">
           <span>Вопрос ${s.cursor + 1} из ${s.items.length}</span>
@@ -256,13 +256,19 @@ export function sessionView(svc: TrainerService, now: number): SafeHtml {
             ${q.ruleRefs?.length ? html`<span class="muted" style="font-size:var(--step--1)">ПДД: ${q.ruleRefs.map((r) => (/^\d/.test(r) ? `п. ${r}` : r)).join(', ')}</span>` : ''}
           </div>` : ''}
         <div class="q-actions">
-          <span class="grow kbd-hint">Клавиши: <span class="kbd">1</span>–<span class="kbd">${item.optionOrder.length}</span> ответ${reveal ? html`, <span class="kbd">Enter</span> далее` : ''}${isExam ? html`, <span class="kbd">S</span> пропустить` : ''}</span>
+          <span class="grow kbd-hint">Клавиши: <span class="kbd">1</span>–<span class="kbd">${item.optionOrder.length}</span> ответ, <span class="kbd">Enter</span> далее${isExam ? html`, <span class="kbd">S</span> пропустить` : ''}</span>
           ${isExam && !answered ? html`<button class="btn" data-action="skip">Пропустить</button>` : ''}
-          ${reveal ? (finished
-            ? html`<button class="btn btn-primary" data-action="to-result">Результаты</button>`
-            : html`<button class="btn btn-primary" data-action="next">Далее</button>`) : ''}
         </div>
       </article>
+      ${answered ? html`
+        <div class="next-bar" role="region" aria-label="Следующий вопрос">
+          <div class="next-bar-inner">
+            <span class="next-status ${reveal ? (item.correct ? 'ok' : 'bad') : ''}">${reveal ? (item.correct ? 'Верно' : 'Неверно') : 'Ответ принят'}</span>
+            ${finished && !isExam
+              ? html`<button class="btn btn-primary" id="next-btn" data-action="to-result">Результаты</button>`
+              : html`<button class="btn btn-primary" id="next-btn" data-action="next">Далее <span aria-hidden="true">→</span></button>`}
+          </div>
+        </div>` : ''}
     </section>`;
 }
 
@@ -369,10 +375,21 @@ export function statsView(svc: TrainerService, now: number): SafeHtml {
 
 // ---------- Знаки, поиск ----------
 
-export function signsView(): SafeHtml {
+export function signsView(catalog?: readonly CatalogGroup[]): SafeHtml {
+  if (catalog?.length) {
+    return html`
+      <section class="section"><h1>Дорожные знаки</h1><p class="muted">Изображения и описания из официального набора экзаменационных материалов.</p></section>
+      ${catalog.map((g) => html`<section class="section"><h2>${g.group}</h2><div class="sign-grid">
+        ${g.items.map((s) => html`<div class="card sign-card">
+          <img src="${s.image}" alt="Знак ${s.code} «${s.title}»" loading="lazy" decoding="async" width="84" height="84">
+          <span class="sign-code">${s.code}</span><span>${s.title}</span>
+          ${s.description ? html`<details><summary>Описание</summary><p>${s.description}</p></details>` : ''}
+        </div>`)}
+      </div></section>`)}`;
+  }
   const groups = [...new Set(SIGNS.map((s) => s.group))];
   return html`
-    <section class="section"><h1>Дорожные знаки</h1><p class="muted">Схематичные изображения по ГОСТ Р 52290. Знаки рисуются векторно и используются в вопросах.</p></section>
+    <section class="section"><h1>Дорожные знаки</h1><p class="muted">Схематичные изображения: официальный справочник загружается вместе с полным банком билетов.</p></section>
     ${groups.map((g) => html`<section class="section"><h2>${g}</h2><div class="sign-grid">
       ${SIGNS.filter((s) => s.group === g).map((s) => html`<div class="card sign-card">${sign(s.code + (s.defaultValue ? `:${s.defaultValue}` : ''), 84)}<span class="sign-code">${s.code}</span><span>${s.title}</span></div>`)}
     </div></section>`)}`;

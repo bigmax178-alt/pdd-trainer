@@ -140,3 +140,30 @@ export function renderSign(spec: string, size = 96): string {
     : `<rect x="4" y="4" width="92" height="92" rx="8" fill="#EEE" stroke="#999"/>${text(code, 18, '#666')}`;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="${size}" height="${size}" role="img" aria-label="${label}"><title>${label}</title>${body}</svg>`;
 }
+
+// ---------- Официальный справочник знаков (картинки из набора билетов) ----------
+
+export interface CatalogSign {
+  readonly code: string;
+  readonly title: string;
+  readonly image: string;
+  readonly description: string;
+}
+
+export interface CatalogGroup {
+  readonly group: string;
+  readonly items: readonly CatalogSign[];
+}
+
+/** Разбор недоверенного JSON справочника: допускаются только относительные пути к картинкам. */
+export function parseSignCatalog(raw: unknown): CatalogGroup[] {
+  const groups = (raw as { groups?: unknown })?.groups;
+  if (!Array.isArray(groups)) throw new Error('Справочник знаков повреждён');
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  return groups.map((g) => ({
+    group: str(g?.group),
+    items: (Array.isArray(g?.items) ? g.items : [])
+      .map((i: Record<string, unknown>) => ({ code: str(i.code), title: str(i.title), image: str(i.image), description: str(i.description) }))
+      .filter((i: CatalogSign) => i.code && i.title && /^\.\/images\/[\w./-]+\.(svg|png|jpe?g)$/.test(i.image)),
+  })).filter((g) => g.group && g.items.length > 0);
+}

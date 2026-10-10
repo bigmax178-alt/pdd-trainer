@@ -7,7 +7,7 @@ import { validatePack } from '../src/core/validation.ts';
 import { CATEGORIES, TICKET_SETS, UNCONFIRMED_CATEGORIES, findTicketSet } from '../src/content/categories.ts';
 import { DEMO_PACK } from '../src/content/demo-bank.ts';
 import { PackFormatError, importExternalBank, parsePack } from '../src/content/pack-io.ts';
-import { SIGNS, hasSign, renderSign } from '../src/content/signs.ts';
+import { SIGNS, hasSign, parseSignCatalog, renderSign } from '../src/content/signs.ts';
 import { TOPICS, topicIdFromTitle } from '../src/content/topics.ts';
 
 describe('Демо-банк', () => {
@@ -130,6 +130,25 @@ describe('Импорт официального банка (формат pdd_rus
     const evil = JSON.parse(JSON.stringify(DEMO_PACK));
     evil.questions[0].image = { kind: 'url', src: 'javascript:alert(1)' };
     assert.equal(parsePack(evil).questions[0]?.image, undefined, 'опасные URL картинок отбрасываются');
+  });
+
+  it('официальные формулировки тем сводятся к темам тренажёра', () => {
+    assert.equal(topicIdFromTitle('Проезд перекрестков'), 'intersections', 'е вместо ё');
+    assert.equal(topicIdFromTitle('Оказание доврачебной медицинской помощи'), 'firstaid');
+    assert.equal(topicIdFromTitle('  Применение аварийной сигнализации и знака аварийной остановки '), 'hazard');
+  });
+
+  it('справочник знаков: только относительные пути к картинкам', () => {
+    const groups = parseSignCatalog({ groups: [
+      { group: 'Запрещающие', items: [
+        { code: '3.1', title: 'Въезд запрещён', image: './images/signs/a1.svg', description: 'd' },
+        { code: '3.2', title: 'x', image: 'javascript:alert(1)' },
+        { code: '3.3', title: 'y', image: 'https://evil.example/x.svg' },
+      ] },
+      { group: 'Пустая', items: [] },
+    ] });
+    assert.deepEqual(groups.map((g) => g.items.map((i) => i.code)), [['3.1']]);
+    assert.throws(() => parseSignCatalog({}));
   });
 
   it('транслитерация тем стабильна', () => {
