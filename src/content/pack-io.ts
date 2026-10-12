@@ -143,10 +143,16 @@ export function importExternalBank(input: ExternalBankInput): { pack: ContentPac
           ...(image ? { image } : {}),
           ...(refs.length ? { ruleRefs: [...new Set(refs)] } : {}),
         };
-        // Одинаковый id в разных банках с разным содержимым — разводим суффиксом банка.
-        let id = str(q.id) || `${bank.toLowerCase()}${number}-${pos}`;
-        const existing = questions.get(id);
-        if (existing && JSON.stringify({ ...existing, id: '' }) !== JSON.stringify(question)) id = `${id}-${bank}`;
+        // Одинаковый id с разным содержимым разводим: сначала суффиксом банка (разные банки),
+        // затем номером билета и вопроса — в исходном наборе id повторяется и внутри одного банка.
+        const base = str(q.id) || `${bank.toLowerCase()}${number}-${pos}`;
+        const taken = (candidate: string) => {
+          const existing = questions.get(candidate);
+          return existing !== undefined && JSON.stringify({ ...existing, id: '' }) !== JSON.stringify(question);
+        };
+        let id = base;
+        if (taken(id)) id = `${base}-${bank}`;
+        if (taken(id)) id = `${base}-${bank}-${number}-${pos}`;
         if (!questions.has(id)) questions.set(id, { ...question, id });
         ids.push(id);
       }

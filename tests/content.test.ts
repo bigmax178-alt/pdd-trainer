@@ -111,6 +111,26 @@ describe('Импорт официального банка (формат pdd_rus
     assert.doesNotThrow(() => parsePack(JSON.parse(JSON.stringify(pack))));
   });
 
+  it('разводит повтор id внутри одного банка, а не подменяет вопрос', () => {
+    // Как в исходном наборе: CD Б4-9 и Б30-2 — один id, разные пояснения; в ABM этот id уже занят.
+    const dup = (at: number, text: string, image?: string) => (q: Record<string, unknown>, pos: number) => {
+      if (pos !== at) return;
+      q.id = 'dup';
+      q.answer_tip = text;
+      if (image) q.image = image;
+    };
+    const { pack } = importExternalBank({
+      AB: [ticket(1, dup(4, 'Трамвайные пути')), ticket(2)],
+      CD: [ticket(1, dup(4, 'Трамвайные пути', './images/C_D/x.jpg')), ticket(2, dup(1, 'Знак 4.1.1', './images/C_D/x.jpg'))],
+    });
+    const cd1 = pack.banks.CD[0]?.questionIds[4];
+    const cd2 = pack.banks.CD[1]?.questionIds[1];
+    assert.notEqual(cd1, cd2);
+    assert.equal(pack.questions.find((x) => x.id === cd1)?.explanation, 'Трамвайные пути');
+    assert.equal(pack.questions.find((x) => x.id === cd2)?.explanation, 'Знак 4.1.1');
+    assert.equal(new Set(pack.questions.map((x) => x.id)).size, pack.questions.length);
+  });
+
   it('сообщает об ошибках исходных данных', () => {
     const { issues } = importExternalBank({
       AB: [ticket(1, (q, i) => { if (i === 2) q.answers = [{ answer_text: 'a', is_correct: true }, { answer_text: 'b', is_correct: true }]; }), 'мусор'],

@@ -53,7 +53,8 @@ for (const rel of images) if (!(await exists(join(src, rel)))) missing.push(rel)
 if (missing.length) throw new Error(`В наборе нет картинок к вопросам: ${missing.slice(0, 5).join(', ')}`);
 for (const g of signs) for (const s of g.items) images.add(s.image);
 
-await rm(out, { recursive: true, force: true });
+// Чистим только своё: картинки и файлы банка. Текст ПДД (content/rules.json) кладёт fetch:rules — его не трогаем.
+await rm(join(out, 'images'), { recursive: true, force: true });
 await mkdir(join(out, 'content'), { recursive: true });
 let bytes = 0;
 for (const rel of images) {
